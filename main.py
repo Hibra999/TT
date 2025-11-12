@@ -1,18 +1,23 @@
 import pandas as pd
-import numpy as np
 import warnings
-import os
 from data.yfinance_data import download_yf
+from data.ccxt_data import download_cx
 warnings.filterwarnings("ignore")
 
 #Extracción datos
-df = pd.DataFrame()                              
-tokens  = ['KO', 'AAPL', 'NVDA', 'JNJ', '^GSPC'] # acciones y el indice que escojimos, coca cola, apple, nvidia, jyj, s&p500
+df = pd.DataFrame()    
+
 start = "2019-12-31" # 2020
 end = "2025-11-01" # Hasta el 2025 del 31 de octubre
 
-for token in tokens:
-    df[token] = download_yf(token, start, end)
+#Acciones y indices
+tokens  = ['KO', 'AAPL', 'NVDA', 'JNJ', '^GSPC'] # acciones y el indice que escojimos, coca cola, apple, nvidia, jyj, s&p500
+download_yf(tokens, start, end)
 
-df = pd.read_csv(r"C:\Users\hibra\Desktop\TT\data\AAPL_2020-2025.csv")
+#Criptomonedas
+cryptos = ["BTC/USDT", "ETH/USDT"] # bitcoin y etherium
+download_cx(cryptos, start, end)
+
+#df = pd.read_csv(r"C:\Users\hibra\Desktop\TT\data\AAPL_2020-2025.csv")
+df = pd.read_csv(r"")
 print(df.head(20))
