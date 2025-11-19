@@ -15,7 +15,7 @@ end = "2025-11-01" # Hasta el 2025 del 31 de octubre
 @st.cache_data
 def load_data():
     #Acciones y indices
-    tokens  = ['KO', 'AAPL', 'NVDA', 'JNJ', '^GSPC'] # acciones y el indice que escojimos, coca cola, apple, nvidia, jyj, s&p500
+    tokens  = ['KO', 'AAPL', 'NVDA', 'JNJ', '^GSPC', "GC=F", "CBOE"] 
     dy = download_yf(tokens, start, end)
     cryptos = ["BTC/USDT", "ETH/USDT"] # bitcoin y etherium
     dc = download_cx(cryptos, start, end)
