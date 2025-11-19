@@ -65,4 +65,5 @@ vmdpy==0.2
 watchdog==6.0.0
 yfinance==0.2.66
 streamlit
-minepy 
+minepy
+pandas_datareader

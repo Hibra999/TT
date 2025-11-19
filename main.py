@@ -2,9 +2,11 @@ import pandas as pd
 import warnings
 from data.yfinance_data import download_yf
 from data.ccxt_data import download_cx
+from features.macroeconomics import macroeconomicos
 from features.tecnical_indicators import TA
+import streamlit as st
 warnings.filterwarnings("ignore")
-import streamlit as st #Interfaz para facilitarnos el trabajo
+
 st.title('TT')
 #Extracción datos
 df = pd.DataFrame()    
@@ -29,3 +31,7 @@ st.dataframe(df.head(5))
 st.subheader("Indicadores Tecnicos")
 df_ta = TA(df)
 st.dataframe(df_ta.tail(5))
+
+st.subheader("Datos Macroeconomicos")
+df_ma = macroeconomicos()
+st.dataframe(df_ma)
