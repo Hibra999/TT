@@ -4,6 +4,7 @@ from data.yfinance_data import download_yf
 from data.ccxt_data import download_cx
 from features.macroeconomics import macroeconomicos
 from features.tecnical_indicators import TA
+from features.top_n import top_k
 import streamlit as st
 warnings.filterwarnings("ignore")
 
@@ -26,15 +27,22 @@ load_data()
 
 token = st.selectbox(label="ACTIVO FINANCIERO: ", options=['KO', 'AAPL', 'NVDA', 'JNJ', '^GSPC', "BTC-USDT", "ETH-USDT"])
 df = pd.read_csv(rf"C:\Users\hibra\Desktop\TT\data\tokens\{token}_2020-2025.csv") #Hay que mejorar esto del directorio cesarin
-st.dataframe(df)
+st.dataframe(df.head(31))
 
 st.subheader("Indicadores Tecnicos")
 df_ta = TA(df)
-st.dataframe(df_ta.tail())
+st.dataframe(df_ta.head(31))
 
 st.subheader("Datos Macroeconomicos")
 df_ma = macroeconomicos(df["Date_final"])
+st.dataframe(df_ma.head(31))
 
-st.dataframe(df_ma)
+df_ta = df_ta.reset_index(drop=True)
+df_ma = df_ma.reset_index(drop=True)
 
-print(df.shape[0], df_ta.shape[0], df_ma.shape[0])
+st.subheader("DF_final")
+df_final = pd.concat([df_ta, df_ma], axis=1)
+st.dataframe(df_final)
+
+st.subheader("MIC: top n caracteristicas")
+features = top_k()
