@@ -9,4 +9,7 @@ end = datetime(2025, 10, 31)
 
 def macroeconomicos():
     macro = web.DataReader(["GDP","CPIAUCSL","FEDFUNDS","DGS10","SOFR","UNRATE"],"fred", start=start, end=end)
-    return macro
+    columnas = macro.columns
+    for col in columnas:
+        macro[col] = macro[col].ffill() # ya quedo el ffill
+    return macro.dropna()
