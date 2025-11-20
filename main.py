@@ -10,7 +10,7 @@ warnings.filterwarnings("ignore")
 st.title('TT')
 #Extracción datos
 df = pd.DataFrame()    
-start = "2019-12-31" # 2020
+start = "2020-01-01" # 2020
 end = "2025-11-01" # Hasta el 2025 del 31 de octubre
 
 #Criptomonedas
@@ -26,12 +26,15 @@ load_data()
 
 token = st.selectbox(label="ACTIVO FINANCIERO: ", options=['KO', 'AAPL', 'NVDA', 'JNJ', '^GSPC', "BTC-USDT", "ETH-USDT"])
 df = pd.read_csv(rf"C:\Users\hibra\Desktop\TT\data\tokens\{token}_2020-2025.csv") #Hay que mejorar esto del directorio cesarin
-st.dataframe(df.head(5))
+st.dataframe(df)
 
 st.subheader("Indicadores Tecnicos")
 df_ta = TA(df)
-st.dataframe(df_ta.tail(5))
+st.dataframe(df_ta.tail())
 
 st.subheader("Datos Macroeconomicos")
-df_ma = macroeconomicos()
+df_ma = macroeconomicos(df["Date_final"])
+
 st.dataframe(df_ma)
+
+print(df.shape[0], df_ta.shape[0], df_ma.shape[0])
