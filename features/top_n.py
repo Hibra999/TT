@@ -3,7 +3,7 @@ import pandas as pd
 from scipy.stats import rankdata
 from numba import njit
 from joblib import Parallel, delayed
-
+import operator
 @njit(fastmath=True, cache=True)
 def _compute_mic_kernel(x, y, n, B):
     max_mic = 0.0
@@ -83,12 +83,12 @@ def top_k(X, y, k):
     scores = Parallel(n_jobs=-1)(delayed(worker_mic_clean)(X_cols[i], X_vals[:, i], y_vals) for i in range(len(X_cols)))
     valid_scores = [s for s in scores if s[1] is not None]
     sorted_scores = sorted(valid_scores, key=lambda x: x[1], reverse=True)
-    print("-" * 40)
-    print(f"Top {k} Variables por MIC:")
-    print("-" * 40)
+    top = {}
     for i in range(min(k, len(sorted_scores))):
         feat_name, feat_score = sorted_scores[i]
-        print(f"{i+1}. {feat_name:<20} | MIC: {feat_score:.6f}")
+        top[feat_name] = feat_score
+    top = dict(sorted(top.items(), key=lambda item: item[1], reverse=True))
     print("-" * 40)
     top_features = [x[0] for x in sorted_scores[:k]]
-    return top_features
+    print(top)
+    return top_features, top

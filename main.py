@@ -1,8 +1,10 @@
 import pandas as pd
 import numpy as np
 import seaborn as sns
+import plotly.express as px
 import warnings
 import streamlit as st
+import matplotlib.pyplot as plt
 from data.yfinance_data import download_yf
 from data.ccxt_data import download_cx
 from features.macroeconomics import macroeconomicos
@@ -62,10 +64,14 @@ with tab3:
     
     st.subheader("DF_final")
     df_final = pd.concat([df_ta, df_ma], axis=1)
-    st.dataframe(df_final)
-
+    #st.write(df_final.describe())
+    df_final = df_final.apply(lambda x: (x - x.min() / x.max() - x.min()))
+    #st.write(df_final.describe())
+    st.dataframe(df_final.tail())
     st.subheader("MIC: top n caracteristicas")
-
     df_final = df_final.iloc[1:]
-    features = top_k(df_final, log_close, 15)
-    st.write(features)
+    features, valores_mic = top_k(df_final, log_close, 15)
+    df_importance = pd.DataFrame(list(valores_mic.items()), columns=['Feature', 'Score'])
+    fig = px.bar(df_importance,x='Score',y='Feature', orientation='h',title='MIC')
+    fig.update_layout(yaxis={'categoryorder':'total ascending'})
+    st.plotly_chart(fig, use_container_width=True)
