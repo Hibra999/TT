@@ -18,8 +18,10 @@ def download_cx(cryptos, start, end):
                 break
             all_data.extend(ohlcv)
             current_ts = ohlcv[-1][0] + 86400000 
-        df_temp = pd.DataFrame(all_data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df_temp = pd.DataFrame(all_data, columns=['timestamp', 'Open', 'High', 'Low', 'Close', 'Volume'])
         df_temp['date'] = pd.to_datetime(df_temp['timestamp'], unit='ms')
         df_temp.set_index('date', inplace=True)
+        df_temp["Date_final"] = pd.to_datetime(df_temp.index)
+        df_temp["Date_final"] = df_temp["Date_final"].dt.date
         filename = cyt.replace('/', '-')
         df_temp.to_csv(f"data/tokens/{filename}_2020-2025.csv")

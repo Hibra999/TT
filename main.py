@@ -14,7 +14,7 @@ st.set_page_config(layout="wide")
 
 with st.sidebar:
     start = "2020-01-01"
-    end = "2025-11-01"
+    end = "2025-10-31"
 
     @st.cache_data
     def load_data():
@@ -38,22 +38,23 @@ with tab1:
     with col1:
         st.subheader("CLOSE")
         st.line_chart(df["Close"])
-        st.dataframe(df.head(31))
+        st.dataframe(df.head(5))
+
     with col2:
         st.subheader("LOG RETURN")
-        log_df = np.log(df["Close"] / df["Close"].shift(-1)).dropna()
-        st.line_chart(log_df)
+        log_close = np.log(df["Close"] / df["Close"].shift(-1)).dropna()
+        st.line_chart(log_close)
 
 with tab2:
     col1, col2 = st.columns(2)
     with col1:
         st.subheader("Indicadores Tecnicos")
         df_ta = TA(df)
-        st.dataframe(df_ta.head(31))
+        st.dataframe(df_ta.head(5))
     with col2:
         st.subheader("Datos Macroeconomicos")
         df_ma = macroeconomicos(df["Date_final"])
-        st.dataframe(df_ma.head(31))
+        st.dataframe(df_ma.tail(5))
 
 with tab3:
     df_ta = df_ta.reset_index(drop=True)
@@ -64,5 +65,7 @@ with tab3:
     st.dataframe(df_final)
 
     st.subheader("MIC: top n caracteristicas")
-    features = top_k(df_final.dropna(axis=0), log_df, 15)
+
+    df_final = df_final.iloc[1:]
+    features = top_k(df_final, log_close, 15)
     st.write(features)
