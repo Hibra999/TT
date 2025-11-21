@@ -11,6 +11,8 @@ from features.macroeconomics import macroeconomicos
 from preprocessing.walk_forward import wfrw
 from features.tecnical_indicators import TA
 from features.top_n import top_k
+from plotly.subplots import make_subplots
+import plotly.graph_objects as go
 
 warnings.filterwarnings("ignore")
 st.set_page_config(layout="wide")
@@ -41,7 +43,7 @@ with tab1:
     with col1:
         st.subheader("CLOSE")
         st.line_chart(df["Close"])
-        st.dataframe(df.head(5))
+        st.dataframe(df.tail())
 
     with col2:
         st.subheader("LOG RETURN")
@@ -53,11 +55,11 @@ with tab2:
     with col1:
         st.subheader("Indicadores Tecnicos")
         df_ta = TA(df)
-        st.dataframe(df_ta.head(5))
+        st.dataframe(df_ta.tail())
     with col2:
         st.subheader("Datos Macroeconomicos")
         df_ma = macroeconomicos(df["Date_final"])
-        st.dataframe(df_ma.tail(5))
+        st.dataframe(df_ma.tail())
 
 with tab3:
     df_ta = df_ta.reset_index(drop=True)
@@ -83,4 +85,16 @@ with tab4:
     y_train = log_close.iloc[:train_size]
     y_test  = log_close.iloc[train_size:]
     splitter = wfrw(y_train, k=5, fh_val=30)
-    st.write(splitter)
+    #Grafica de train y test cesaron
+    fig_tt = go.Figure()
+    fig_tt.add_trace(go.Scatter(x=y_train.index, y=y_train, name='train', line_color='blue'))
+    fig_tt.add_trace(go.Scatter(x=y_test.index, y=y_test, name='test', line_color='orange'))
+    fig_tt.update_layout(title="Train y test", height=350, margin=dict(l=10, r=10, t=30, b=10))
+    st.plotly_chart(fig_tt, use_container_width=True)
+    #Grafica de wf
+    fig = make_subplots(rows=5, cols=1, shared_xaxes=True, vertical_spacing=0.02)
+    for i, (t_idx, v_idx) in enumerate(wfrw(y_train, k=5, fh_val=30).split(y_train)):
+        fig.add_trace(go.Scatter(x=y_train.index[t_idx], y=y_train.iloc[t_idx], line_color='blue'), row=i+1, col=1)
+        fig.add_trace(go.Scatter(x=y_train.index[v_idx], y=y_train.iloc[v_idx], line_color='red'), row=i+1, col=1)
+    fig.update_layout(height=800, showlegend=False, title="Folds", margin=dict(l=10, r=10, t=40, b=10))
+    st.plotly_chart(fig, use_container_width=True)
