@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 from data.yfinance_data import download_yf
 from data.ccxt_data import download_cx
 from features.macroeconomics import macroeconomicos
+from model.bases_models.ligthGBM_model import train_fold
 from preprocessing.walk_forward import wfrw
 from features.tecnical_indicators import TA
 from features.top_n import top_k
@@ -36,7 +37,7 @@ st.title('TT')
 
 df = pd.read_csv(rf"C:\Users\hibra\Desktop\TT\data\tokens\{token}_2020-2025.csv")
 
-tab1, tab2, tab3, tab4 = st.tabs(["Datos & Retornos", "Caracteristicas (TA/Macro)", "MICFS", "Walk Folward"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["Datos & Retornos", "Caracteristicas (TA/Macro)", "MICFS", "Walk Folward", "BaseModelsTrain"])
 
 with tab1:
     col1, col2 = st.columns(2)
@@ -98,3 +99,8 @@ with tab4:
         fig.add_trace(go.Scatter(x=y_train.index[v_idx], y=y_train.iloc[v_idx], line_color='red'), row=i+1, col=1)
     fig.update_layout(height=800, showlegend=False, title="Folds", margin=dict(l=10, r=10, t=40, b=10))
     st.plotly_chart(fig, use_container_width=True)
+
+with tab5:
+    for i, (t_idx, v_idx) in enumerate(wfrw(y_train, k=5, fh_val=30).split(y_train)):
+        y_train, y_test = t_idx, v_idx
+        hyper = train_fold(y_train, y_test)
