@@ -88,7 +88,5 @@ def top_k(X, y, k):
         feat_name, feat_score = sorted_scores[i]
         top[feat_name] = feat_score
     top = dict(sorted(top.items(), key=lambda item: item[1], reverse=True))
-    print("-" * 40)
     top_features = [x[0] for x in sorted_scores[:k]]
-    print(top)
     return top_features, top

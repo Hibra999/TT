@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 from data.yfinance_data import download_yf
 from data.ccxt_data import download_cx
 from features.macroeconomics import macroeconomicos
+from preprocessing.walk_forward import wfrw
 from features.tecnical_indicators import TA
 from features.top_n import top_k
 
@@ -33,7 +34,7 @@ st.title('TT')
 
 df = pd.read_csv(rf"C:\Users\hibra\Desktop\TT\data\tokens\{token}_2020-2025.csv")
 
-tab1, tab2, tab3 = st.tabs(["Datos & Retornos", "Indicadores (TA/Macro)", "Modelo (MIC)"])
+tab1, tab2, tab3, tab4 = st.tabs(["Datos & Retornos", "Caracteristicas (TA/Macro)", "MICFS", "Walk Folward"])
 
 with tab1:
     col1, col2 = st.columns(2)
@@ -75,3 +76,11 @@ with tab3:
     fig = px.bar(df_importance,x='Score',y='Feature', orientation='h',title='MIC')
     fig.update_layout(yaxis={'categoryorder':'total ascending'})
     st.plotly_chart(fig, use_container_width=True)
+
+with tab4:
+    n = len(log_close)
+    train_size = int(n * 0.9)
+    y_train = log_close.iloc[:train_size]
+    y_test  = log_close.iloc[train_size:]
+    splitter = wfrw(y_train, k=5, fh_val=30)
+    st.write(splitter)
