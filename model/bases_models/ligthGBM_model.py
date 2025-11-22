@@ -21,7 +21,6 @@ def objective_global(trial, X, y, splitter):
         "reg_lambda": trial.suggest_float("reg_lambda", 1e-8, 10.0, log=True),
         "random_state": 42,
         "verbose": -1,
-        "n_jobs": -1
     }
     if param["boosting_type"] == "rf":
         param["subsample"] = max(param["subsample"], 0.7) 
