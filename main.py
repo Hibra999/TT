@@ -11,11 +11,13 @@ from data.ccxt_data import download_cx
 from features.macroeconomics import macroeconomicos
 from model.bases_models.ligthGBM_model import objective_global
 from model.bases_models.catboost_model import objective_catboost_global
+from model.bases_models.timexer_model import objective_timexer_global
 from preprocessing.walk_forward import wfrw
 from features.tecnical_indicators import TA
 from features.top_n import top_k
 from plotly.subplots import make_subplots
 import plotly.graph_objects as go
+import torch
 
 warnings.filterwarnings("ignore")
 st.set_page_config(layout="wide")
@@ -126,6 +128,13 @@ with tab5:
     st.json(best_params_cb)
     st.write(f"Mejor MAE Promedio Global: {study_cb.best_value:.4f}")"""
 
-    
-    pass
+    st.subheader("timexer")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    splitter = wfrw(y, k=5, fh_val=30)
+    with st.spinner('optimizando TimeXer'):
+        study_tx = optuna.create_study(direction="minimize")
+        study_tx.optimize(lambda trial: objective_timexer_global(trial, X, y, splitter, device=device, seq_len=96, pred_len=30, features='MS', pretrained_path=None, freeze_backbone=False), n_trials=50, n_jobs=1)
+        best_params_tx = study_tx.best_params
+        st.json(best_params_tx)
+        st.write(f"Mejor MAE Promedio Global TimeXer: {study_tx.best_value:.4f}")
 
