@@ -10,6 +10,7 @@ from data.yfinance_data import download_yf
 from data.ccxt_data import download_cx
 from features.macroeconomics import macroeconomicos
 from model.bases_models.ligthGBM_model import objective_global
+from model.bases_models.catboost_model import objective_catboost_global
 from preprocessing.walk_forward import wfrw
 from features.tecnical_indicators import TA
 from features.top_n import top_k
@@ -104,6 +105,8 @@ with tab4:
     st.plotly_chart(fig, use_container_width=True)
 
 with tab5:
+
+    """
     st.subheader("lgb")
     splitter = wfrw(y, k=5, fh_val=30)
     with st.spinner('optimizando lgb'):
@@ -112,3 +115,17 @@ with tab5:
     best_params = study.best_params
     st.json(best_params)
     st.write(f"Mejor MAE Promedio Global: {study.best_value:.4f}")
+    st.subheader("CatBoost")
+    st.subheader("catboost")
+
+    with st.spinner('optimizando catboost'):
+        study_cb = optuna.create_study(direction="minimize")
+        study_cb.optimize(lambda trial: objective_catboost_global(trial, X, y, splitter), n_trials=300, n_jobs=1)
+    best_params_cb = study_cb.best_params
+    st.write("CatBoost hiper:")
+    st.json(best_params_cb)
+    st.write(f"Mejor MAE Promedio Global: {study_cb.best_value:.4f}")"""
+
+    
+    pass
+
