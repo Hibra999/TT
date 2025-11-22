@@ -5,10 +5,11 @@ import plotly.express as px
 import warnings
 import streamlit as st
 import matplotlib.pyplot as plt
+import optuna
 from data.yfinance_data import download_yf
 from data.ccxt_data import download_cx
 from features.macroeconomics import macroeconomicos
-from model.bases_models.ligthGBM_model import train_fold
+from model.bases_models.ligthGBM_model import objective_global
 from preprocessing.walk_forward import wfrw
 from features.tecnical_indicators import TA
 from features.top_n import top_k
@@ -69,7 +70,7 @@ with tab3:
     st.subheader("DF_final")
     df_final = pd.concat([df_ta, df_ma], axis=1)
     #st.write(df_final.describe())
-    df_final = df_final.apply(lambda x: (x - x.min() / x.max() - x.min()))
+    df_final = df_final.apply(lambda x: (x - x.min()) / (x.max() - x.min()))
     #st.write(df_final.describe())
     st.dataframe(df_final.tail())
     st.subheader("MIC: top n caracteristicas")
@@ -79,6 +80,8 @@ with tab3:
     fig = px.bar(df_importance,x='Score',y='Feature', orientation='h',title='MIC')
     fig.update_layout(yaxis={'categoryorder':'total ascending'})
     st.plotly_chart(fig, use_container_width=True)
+    X = df_final[features] 
+    y = log_close.iloc[1:].reset_index(drop=True)
 
 with tab4:
     n = len(log_close)
@@ -101,6 +104,11 @@ with tab4:
     st.plotly_chart(fig, use_container_width=True)
 
 with tab5:
-    for i, (t_idx, v_idx) in enumerate(wfrw(y_train, k=5, fh_val=30).split(y_train)):
-        y_train, y_test = t_idx, v_idx
-        hyper = train_fold(y_train, y_test)
+    st.subheader("lgb")
+    splitter = wfrw(y, k=5, fh_val=30)
+    with st.spinner('optimizando lgb'):
+        study = optuna.create_study(direction="minimize")
+        study.optimize(lambda trial: objective_global(trial, X, y, splitter), n_trials=300, n_jobs=-1)
+    best_params = study.best_params
+    st.json(best_params)
+    st.write(f"Mejor MAE Promedio Global: {study.best_value:.4f}")
