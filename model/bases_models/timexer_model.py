@@ -346,27 +346,25 @@ class PositionalEmbedding(nn.Module):
 
 class SeqDataset(Dataset):
     def __init__(self, X, y, seq_len, pred_len):
-        assert len(X) == len(y), f"X e y deben tener la misma longitud: X={len(X)}, y={len(y)}"
+        assert len(X) == len(y)
         self.seq_len = seq_len
         self.pred_len = pred_len
-        X = X.astype(np.float32)
-        y = y.astype(np.float32).reshape(-1, 1)
+        
+        X = np.nan_to_num(X.astype(np.float32), nan=0.0, posinf=0.0, neginf=0.0)
+        y = np.nan_to_num(y.astype(np.float32), nan=0.0, posinf=0.0, neginf=0.0).reshape(-1, 1)
+        
         self.data = np.concatenate([X, y], axis=1)
-        self.n_vars = self.data.shape[1]
         self.n_samples = len(self.data) - self.seq_len - self.pred_len + 1
+        
         if self.n_samples <= 0:
-            raise ValueError(
-                f"Datos insuficientes: {len(self.data)} filas disponibles "
-                f"para seq_len={seq_len} + pred_len={pred_len}. "
-                f"Se necesitan al menos {seq_len + pred_len} filas."
-            )
+            raise ValueError(f"Datos insuficientes: {len(self.data)} para seq_len={seq_len}, pred_len={pred_len}")
+    
     def __len__(self):
         return self.n_samples
+    
     def __getitem__(self, idx):
-
         x = self.data[idx : idx + self.seq_len, :]
         y = self.data[idx + self.seq_len : idx + self.seq_len + self.pred_len, -1]
-        
         return torch.from_numpy(x), torch.from_numpy(y)
 
 
@@ -384,7 +382,7 @@ def build_timexer_config(trial, enc_in, seq_len, pred_len, features='MS'):
         features=features,
         seq_len=seq_len,
         pred_len=pred_len,
-        use_norm=True,
+        use_norm=False,
         patch_len=patch_len,
         d_model=d_model,
         dropout=dropout,
@@ -412,7 +410,6 @@ def build_model_from_trial(trial, enc_in, seq_len, pred_len, device, features='M
                     p.requires_grad = False
     return model
 
-
 def create_fold_loaders(X, y, t_idx, v_idx, seq_len, pred_len, batch_size):
     start = int(t_idx[0])
     end = int(v_idx[-1])
@@ -422,17 +419,11 @@ def create_fold_loaders(X, y, t_idx, v_idx, seq_len, pred_len, batch_size):
     val_start = int(v_idx[0]) - start
     n_train = val_start - seq_len - pred_len + 1
     if n_train <= 0:
-        raise ValueError(
-            f"Insuficientes datos de entrenamiento en fold. "
-            f"val_start={val_start}, seq_len={seq_len}, pred_len={pred_len}"
-        )
+        raise ValueError(f"Insuficientes datos de entrenamiento")
     train_idx = list(range(n_train))
     val_window_start = val_start - seq_len
     if val_window_start < 0 or val_window_start >= len(full_ds):
-        raise ValueError(
-            f"Ventana de validación fuera de rango: "
-            f"val_window_start={val_window_start}, len(full_ds)={len(full_ds)}"
-        )
+        raise ValueError(f"Ventana de validación fuera de rango")
     val_idx = [val_window_start]
     train_ds = Subset(full_ds, train_idx)
     val_ds = Subset(full_ds, val_idx)
@@ -443,35 +434,27 @@ def create_fold_loaders(X, y, t_idx, v_idx, seq_len, pred_len, batch_size):
 
 def objective_timexer_global(trial, X, y, splitter, device=None, seq_len=96, pred_len=30, 
                             features='MS', pretrained_path=None, freeze_backbone=False):
-
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     enc_in = X.shape[1] + 1
     batch_size = trial.suggest_categorical("batch_size", [16, 32, 64])
-    lr = trial.suggest_float("lr", 1e-4, 5e-3, log=True)
-    weight_decay = trial.suggest_float("weight_decay", 1e-6, 1e-2, log=True)
+    lr = trial.suggest_float("lr", 1e-5, 1e-3, log=True)
+    weight_decay = trial.suggest_float("weight_decay", 1e-6, 1e-3, log=True)
     max_epochs = trial.suggest_int("max_epochs", 10, 50)
     patience = trial.suggest_int("patience", 5, 15)
     fold_scores = []
     for fold_num, (t_idx, v_idx) in enumerate(splitter.split(y)):
         try:
-            train_loader, val_loader = create_fold_loaders(
-                X, y, t_idx, v_idx, seq_len, pred_len, batch_size
-            )
-        except ValueError as e:
-            print(f"Fold {fold_num} omitido: {e}")
+            train_loader, val_loader = create_fold_loaders(X, y, t_idx, v_idx, seq_len, pred_len, batch_size)
+        except:
             return float("inf")
-        model = build_model_from_trial(
-            trial, enc_in=enc_in, seq_len=seq_len, pred_len=pred_len,
-            device=device, features=features, 
-            pretrained_path=pretrained_path, freeze_backbone=freeze_backbone
-        )
+        model = build_model_from_trial(trial, enc_in=enc_in, seq_len=seq_len, pred_len=pred_len,
+                                       device=device, features=features, 
+                                       pretrained_path=pretrained_path, freeze_backbone=freeze_backbone)
         criterion = nn.L1Loss()
-        optimizer = torch.optim.AdamW(
-            filter(lambda p: p.requires_grad, model.parameters()),
-            lr=lr, weight_decay=weight_decay
-        )
-        best_val = 10000
+        optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()),
+                                      lr=lr, weight_decay=weight_decay)
+        best_val = float("inf")
         patience_counter = 0
         for epoch in range(max_epochs):
             model.train()
@@ -479,9 +462,10 @@ def objective_timexer_global(trial, X, y, splitter, device=None, seq_len=96, pre
                 x_batch = x_batch.to(device)
                 y_batch = y_batch.to(device)
                 optimizer.zero_grad()
-                out = model(x_batch, None, None, None)
-                out = out.squeeze(-1)
+                out = model(x_batch, None, None, None).squeeze(-1)
                 loss = criterion(out, y_batch)
+                if torch.isnan(loss):
+                    return float("inf")
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 optimizer.step()
@@ -494,8 +478,9 @@ def objective_timexer_global(trial, X, y, splitter, device=None, seq_len=96, pre
                     out = model(x_batch, None, None, None).squeeze(-1)
                     val_loss = criterion(out, y_batch)
                     val_losses.append(val_loss.item())
-            
             mean_val = float(np.mean(val_losses))
+            if np.isnan(mean_val):
+                return float("inf")
             if mean_val < best_val:
                 best_val = mean_val
                 patience_counter = 0
