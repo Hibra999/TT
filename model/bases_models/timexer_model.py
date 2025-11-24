@@ -346,25 +346,28 @@ class PositionalEmbedding(nn.Module):
 
 class SeqDataset(Dataset):
     def __init__(self, X, y, seq_len, pred_len):
-        assert len(X) == len(y)
+        assert len(X) == len(y), f"X e y deben tener la misma longitud: X={len(X)}, y={len(y)}"
         self.seq_len = seq_len
         self.pred_len = pred_len
         X = X.astype(np.float32)
-        y = y.astype(np.float32)
-        self.data = np.concatenate([X, y.reshape(-1, 1)], axis=1)
+        y = y.astype(np.float32).reshape(-1, 1)
+        self.data = np.concatenate([X, y], axis=1)
+        self.n_vars = self.data.shape[1]
         self.n_samples = len(self.data) - self.seq_len - self.pred_len + 1
         if self.n_samples <= 0:
-            raise ValueError(f"Datos insuficientes: {len(self.data)} para seq_len={seq_len}, pred_len={pred_len}")
-
+            raise ValueError(
+                f"Datos insuficientes: {len(self.data)} filas disponibles "
+                f"para seq_len={seq_len} + pred_len={pred_len}. "
+                f"Se necesitan al menos {seq_len + pred_len} filas."
+            )
     def __len__(self):
         return self.n_samples
-
     def __getitem__(self, idx):
-        x = self.data[idx: idx + self.seq_len, :]
-        y = self.data[idx + self.seq_len: idx + self.seq_len + self.pred_len, -1]
-        x = torch.from_numpy(x)
-        y = torch.from_numpy(y)
-        return x, y
+
+        x = self.data[idx : idx + self.seq_len, :]
+        y = self.data[idx + self.seq_len : idx + self.seq_len + self.pred_len, -1]
+        
+        return torch.from_numpy(x), torch.from_numpy(y)
 
 
 def build_timexer_config(trial, enc_in, seq_len, pred_len, features='MS'):
@@ -413,17 +416,23 @@ def build_model_from_trial(trial, enc_in, seq_len, pred_len, device, features='M
 def create_fold_loaders(X, y, t_idx, v_idx, seq_len, pred_len, batch_size):
     start = int(t_idx[0])
     end = int(v_idx[-1])
-    X_fold = X.iloc[start:end + 1].values
-    y_fold = y.iloc[start:end + 1].values
+    X_fold = X.iloc[start:end + 1].reset_index(drop=True).values
+    y_fold = y.iloc[start:end + 1].reset_index(drop=True).values
     full_ds = SeqDataset(X_fold, y_fold, seq_len, pred_len)
     val_start = int(v_idx[0]) - start
     n_train = val_start - seq_len - pred_len + 1
     if n_train <= 0:
-        raise ValueError("No hay suficientes muestras de entrenamiento en este fold para la ventana especificada")
+        raise ValueError(
+            f"Insuficientes datos de entrenamiento en fold. "
+            f"val_start={val_start}, seq_len={seq_len}, pred_len={pred_len}"
+        )
     train_idx = list(range(n_train))
     val_window_start = val_start - seq_len
     if val_window_start < 0 or val_window_start >= len(full_ds):
-        raise ValueError("No hay suficiente historial para la ventana de validación en este fold")
+        raise ValueError(
+            f"Ventana de validación fuera de rango: "
+            f"val_window_start={val_window_start}, len(full_ds)={len(full_ds)}"
+        )
     val_idx = [val_window_start]
     train_ds = Subset(full_ds, train_idx)
     val_ds = Subset(full_ds, val_idx)
@@ -432,25 +441,37 @@ def create_fold_loaders(X, y, t_idx, v_idx, seq_len, pred_len, batch_size):
     return train_loader, val_loader
 
 
-def objective_timexer_global(trial, X, y, splitter, device=None, seq_len=96, pred_len=30, features='MS', pretrained_path=None, freeze_backbone=False):
+def objective_timexer_global(trial, X, y, splitter, device=None, seq_len=96, pred_len=30, 
+                            features='MS', pretrained_path=None, freeze_backbone=False):
+
     if device is None:
-        device = torch.device('cpu')
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     enc_in = X.shape[1] + 1
     batch_size = trial.suggest_categorical("batch_size", [16, 32, 64])
     lr = trial.suggest_float("lr", 1e-4, 5e-3, log=True)
     weight_decay = trial.suggest_float("weight_decay", 1e-6, 1e-2, log=True)
-    max_epochs = trial.suggest_int("max_epochs", 5, 30)
-    patience = trial.suggest_int("patience", 3, 10)
+    max_epochs = trial.suggest_int("max_epochs", 10, 50)
+    patience = trial.suggest_int("patience", 5, 15)
     fold_scores = []
-    for t_idx, v_idx in splitter.split(y):
+    for fold_num, (t_idx, v_idx) in enumerate(splitter.split(y)):
         try:
-            train_loader, val_loader = create_fold_loaders(X, y, t_idx, v_idx, seq_len, pred_len, batch_size)
-        except ValueError:
+            train_loader, val_loader = create_fold_loaders(
+                X, y, t_idx, v_idx, seq_len, pred_len, batch_size
+            )
+        except ValueError as e:
+            print(f"Fold {fold_num} omitido: {e}")
             return float("inf")
-        model = build_model_from_trial(trial, enc_in=enc_in, seq_len=seq_len, pred_len=pred_len, device=device, features=features, pretrained_path=pretrained_path, freeze_backbone=freeze_backbone)
+        model = build_model_from_trial(
+            trial, enc_in=enc_in, seq_len=seq_len, pred_len=pred_len,
+            device=device, features=features, 
+            pretrained_path=pretrained_path, freeze_backbone=freeze_backbone
+        )
         criterion = nn.L1Loss()
-        optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=lr, weight_decay=weight_decay)
-        best_val = float("inf")
+        optimizer = torch.optim.AdamW(
+            filter(lambda p: p.requires_grad, model.parameters()),
+            lr=lr, weight_decay=weight_decay
+        )
+        best_val = 10000
         patience_counter = 0
         for epoch in range(max_epochs):
             model.train()
@@ -473,6 +494,7 @@ def objective_timexer_global(trial, X, y, splitter, device=None, seq_len=96, pre
                     out = model(x_batch, None, None, None).squeeze(-1)
                     val_loss = criterion(out, y_batch)
                     val_losses.append(val_loss.item())
+            
             mean_val = float(np.mean(val_losses))
             if mean_val < best_val:
                 best_val = mean_val

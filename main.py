@@ -82,7 +82,7 @@ with tab3:
     df_importance = pd.DataFrame(list(valores_mic.items()), columns=['Feature', 'Score'])
     fig = px.bar(df_importance,x='Score',y='Feature', orientation='h',title='MIC')
     fig.update_layout(yaxis={'categoryorder':'total ascending'})
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
     X = df_final[features] 
     y = log_close.iloc[1:].reset_index(drop=True)
 
@@ -97,14 +97,14 @@ with tab4:
     fig_tt.add_trace(go.Scatter(x=y_train.index, y=y_train, name='train', line_color='blue'))
     fig_tt.add_trace(go.Scatter(x=y_test.index, y=y_test, name='test', line_color='orange'))
     fig_tt.update_layout(title="Train y test", height=350, margin=dict(l=10, r=10, t=30, b=10))
-    st.plotly_chart(fig_tt, use_container_width=True)
+    st.plotly_chart(fig_tt, width='stretch')
     #Grafica de wf
     fig = make_subplots(rows=5, cols=1, shared_xaxes=True, vertical_spacing=0.02)
     for i, (t_idx, v_idx) in enumerate(wfrw(y_train, k=5, fh_val=30).split(y_train)):
         fig.add_trace(go.Scatter(x=y_train.index[t_idx], y=y_train.iloc[t_idx], line_color='blue'), row=i+1, col=1)
         fig.add_trace(go.Scatter(x=y_train.index[v_idx], y=y_train.iloc[v_idx], line_color='red'), row=i+1, col=1)
     fig.update_layout(height=800, showlegend=False, title="Folds", margin=dict(l=10, r=10, t=40, b=10))
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
 with tab5:
 
@@ -132,8 +132,10 @@ with tab5:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     splitter = wfrw(y, k=5, fh_val=30)
     with st.spinner('optimizando TimeXer'):
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        print(device)
         study_tx = optuna.create_study(direction="minimize")
-        study_tx.optimize(lambda trial: objective_timexer_global(trial, X, y, splitter, device=device, seq_len=96, pred_len=30, features='MS', pretrained_path=None, freeze_backbone=False), n_trials=50, n_jobs=1)
+        study_tx.optimize(lambda trial: objective_timexer_global(trial, X, y, splitter, device=device, seq_len=96, pred_len=30, features='MS', pretrained_path=None, freeze_backbone=False), n_trials=50, n_jobs=-1)
         best_params_tx = study_tx.best_params
         st.json(best_params_tx)
         st.write(f"Mejor MAE Promedio Global TimeXer: {study_tx.best_value:.4f}")
