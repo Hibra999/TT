@@ -111,48 +111,47 @@ class MoiraiMoEWrapper:
         else:
             return np.array([np.median(f.samples, axis=0) for f in forecasts])
 
-def objective_moirai_moe_global(
-    trial,
-    X: pd.DataFrame,
-    y: pd.Series,
-    splitter,
-    device: Optional[torch.device] = None,
-    pred_len: int = 30,
-    model_size: str = 'large',
-    freq: str = 'D',
-    use_full_train: bool = True
-) -> float:
+def objective_moirai_moe_global(trial, X, y, splitter, device=None, pred_len=30, model_size='large', freq='D', use_full_train=True, oof_storage=None):
     context_length = trial.suggest_int('context_length', 64, 512, step=32)
     patch_size = trial.suggest_categorical('patch_size', [16, 32])
     num_samples = trial.suggest_int('num_samples', 50, 200, step=25)
     batch_size = trial.suggest_categorical('batch_size', [16, 32, 64])
     y_array = y.values if isinstance(y, pd.Series) else np.array(y)
     try:
-        if use_full_train:
-            mae = _evaluate_full_train(
-                y_array=y_array,
-                context_length=context_length,
-                patch_size=patch_size,
-                num_samples=num_samples,
-                batch_size=batch_size,
-                pred_len=pred_len,
-                model_size=model_size,
-                freq=freq,
-                val_size=pred_len * 2
-            )
-        else:
-            mae = _evaluate_with_folds(
-                y_array=y_array,
-                splitter=splitter,
-                context_length=context_length,
-                patch_size=patch_size,
-                num_samples=num_samples,
-                batch_size=batch_size,
-                pred_len=pred_len,
-                model_size=model_size,
-                freq=freq
-            )
-        return mae
+        fold_scores, fold_preds, fold_indices = [], [], []
+        for train_idx, val_idx in splitter.split(y_array):
+            y_train, y_val = y_array[train_idx], y_array[val_idx]
+            if len(y_train) < context_length:
+                continue
+            wrapper = None
+            try:
+                wrapper = MoiraiMoEWrapper(model_size=model_size, prediction_length=min(pred_len, len(y_val)), context_length=min(context_length, len(y_train)), patch_size=patch_size, num_samples=num_samples, batch_size=batch_size, use_cache=True)
+                full_series = np.concatenate([y_train, y_val])
+                ds = prepare_simple_dataset(full_series, freq=freq)
+                train_ds, test_template = split(ds, offset=-len(y_val))
+                test_data = test_template.generate_instances(prediction_length=min(pred_len, len(y_val)), windows=1, distance=pred_len)
+                forecasts = list(wrapper.predictor.predict(test_data.input))
+                for forecast, label in zip(forecasts, test_data.label):
+                    pred = np.median(forecast.samples, axis=0)
+                    actual = label['target']
+                    min_len = min(len(pred), len(actual))
+                    fold_scores.append(mean_absolute_error(actual[:min_len], pred[:min_len]))
+                    fold_preds.append(pred[:min_len])
+                    fold_indices.append(val_idx[:min_len])
+            finally:
+                if wrapper is not None:
+                    del wrapper.model, wrapper.predictor, wrapper
+                torch.cuda.empty_cache()
+                gc.collect()
+        if not fold_scores:
+            return float('inf')
+        mean_score = np.mean(fold_scores)
+        if oof_storage is not None:
+            if 'best_score' not in oof_storage or mean_score < oof_storage['best_score']:
+                oof_storage['best_score'] = mean_score
+                oof_storage['preds'] = fold_preds
+                oof_storage['indices'] = fold_indices
+        return mean_score
     except Exception as e:
         print(f"Error en trial: {e}")
         torch.cuda.empty_cache()

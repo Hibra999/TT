@@ -432,8 +432,7 @@ def create_fold_loaders(X, y, t_idx, v_idx, seq_len, pred_len, batch_size):
     return train_loader, val_loader
 
 
-def objective_timexer_global(trial, X, y, splitter, device=None, seq_len=96, pred_len=30, 
-                            features='MS', pretrained_path=None, freeze_backbone=False):
+def objective_timexer_global(trial, X, y, splitter, device=None, seq_len=96, pred_len=30, features='MS', pretrained_path=None, freeze_backbone=False, oof_storage=None):
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     enc_in = X.shape[1] + 1
@@ -441,26 +440,21 @@ def objective_timexer_global(trial, X, y, splitter, device=None, seq_len=96, pre
     lr = trial.suggest_float("lr", 1e-5, 1e-3, log=True)
     weight_decay = trial.suggest_float("weight_decay", 1e-6, 1e-3, log=True)
     max_epochs = trial.suggest_int("max_epochs", 10, 50)
-    patience = trial.suggest_int("patience", 5, 15)
-    fold_scores = []
+    patience_val = trial.suggest_int("patience", 5, 15)
+    fold_scores, fold_preds, fold_indices = [], [], []
     for fold_num, (t_idx, v_idx) in enumerate(splitter.split(y)):
         try:
             train_loader, val_loader = create_fold_loaders(X, y, t_idx, v_idx, seq_len, pred_len, batch_size)
         except:
             return float("inf")
-        model = build_model_from_trial(trial, enc_in=enc_in, seq_len=seq_len, pred_len=pred_len,
-                                       device=device, features=features, 
-                                       pretrained_path=pretrained_path, freeze_backbone=freeze_backbone)
+        model = build_model_from_trial(trial, enc_in=enc_in, seq_len=seq_len, pred_len=pred_len, device=device, features=features, pretrained_path=pretrained_path, freeze_backbone=freeze_backbone)
         criterion = nn.L1Loss()
-        optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()),
-                                      lr=lr, weight_decay=weight_decay)
-        best_val = float("inf")
-        patience_counter = 0
+        optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=lr, weight_decay=weight_decay)
+        best_val, patience_counter, best_preds = float("inf"), 0, None
         for epoch in range(max_epochs):
             model.train()
             for x_batch, y_batch in train_loader:
-                x_batch = x_batch.to(device)
-                y_batch = y_batch.to(device)
+                x_batch, y_batch = x_batch.to(device), y_batch.to(device)
                 optimizer.zero_grad()
                 out = model(x_batch, None, None, None).squeeze(-1)
                 loss = criterion(out, y_batch)
@@ -470,26 +464,34 @@ def objective_timexer_global(trial, X, y, splitter, device=None, seq_len=96, pre
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 optimizer.step()
             model.eval()
-            val_losses = []
+            val_losses, epoch_preds = [], []
             with torch.no_grad():
                 for x_batch, y_batch in val_loader:
-                    x_batch = x_batch.to(device)
-                    y_batch = y_batch.to(device)
+                    x_batch, y_batch = x_batch.to(device), y_batch.to(device)
                     out = model(x_batch, None, None, None).squeeze(-1)
-                    val_loss = criterion(out, y_batch)
-                    val_losses.append(val_loss.item())
+                    val_losses.append(criterion(out, y_batch).item())
+                    epoch_preds.append(out.cpu().numpy())
             mean_val = float(np.mean(val_losses))
             if np.isnan(mean_val):
                 return float("inf")
             if mean_val < best_val:
                 best_val = mean_val
+                best_preds = np.concatenate(epoch_preds, axis=0).flatten() if len(epoch_preds) > 1 else epoch_preds[0].flatten()
                 patience_counter = 0
             else:
                 patience_counter += 1
-                if patience_counter >= patience:
+                if patience_counter >= patience_val:
                     break
             trial.report(mean_val, epoch)
             if trial.should_prune():
                 raise optuna.TrialPruned()
         fold_scores.append(best_val)
-    return float(np.mean(fold_scores))
+        fold_preds.append(best_preds)
+        fold_indices.append(v_idx)
+    mean_score = float(np.mean(fold_scores))
+    if oof_storage is not None:
+        if 'best_score' not in oof_storage or mean_score < oof_storage['best_score']:
+            oof_storage['best_score'] = mean_score
+            oof_storage['preds'] = fold_preds
+            oof_storage['indices'] = fold_indices
+    return mean_score
