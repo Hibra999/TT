@@ -106,6 +106,7 @@ with tab3:
     st.plotly_chart(fig, width='stretch')
     X = df_final[features].reset_index(drop=True)
     y = log_close_normalized.reset_index(drop=True)
+    st.dataframe(X)
 
 with tab4:
     n = len(log_close)
@@ -128,7 +129,6 @@ with tab4:
     st.plotly_chart(fig, width='stretch')
 
 with tab5:
-    """
         st.subheader("lgb")
         splitter = wfrw(y, k=5, fh_val=30)
         with st.spinner('optimizando lgb'):
@@ -142,7 +142,7 @@ with tab5:
 
         with st.spinner('optimizando catboost'):
             study_cb = optuna.create_study(direction="minimize")
-            study_cb.optimize(lambda trial: objective_catboost_global(trial, X, y, splitter), n_trials=300, n_jobs=1)
+            study_cb.optimize(lambda trial: objective_catboost_global(trial, X, y, splitter), n_trials=150, n_jobs=1)
         best_params_cb = study_cb.best_params
         st.write("CatBoost hiper:")
         st.json(best_params_cb)
@@ -154,45 +154,38 @@ with tab5:
             device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
             print(device)
             study_tx = optuna.create_study(direction="minimize")
-            study_tx.optimize(lambda trial: objective_timexer_global(trial, X, y, splitter, device=device, seq_len=96, pred_len=30, features='MS', pretrained_path=None, freeze_backbone=False), n_trials=50, n_jobs=-1)
+            study_tx.optimize(lambda trial: objective_timexer_global(trial, X, y, splitter, device=device, seq_len=96, pred_len=30, features='MS', pretrained_path=None, freeze_backbone=False), n_trials=150, n_jobs=1)
             best_params_tx = study_tx.best_params
             st.json(best_params_tx)
             st.write(f"Mejor MAE Promedio Global TimeXer: {study_tx.best_value:.4f}")
+            st.subheader("Moirai-MoE")
+        with st.spinner('Optimizando Moirai-MoE...'):
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            st.write(f"Usando dispositivo: {device}")
+            preload_moirai_module(model_size='small')
+            study_moirai = optuna.create_study(direction="minimize")
+            study_moirai.optimize(
+                lambda trial: objective_moirai_moe_global(
+                    trial, 
+                    X, 
+                    y, 
+                    splitter,
+                    device=device,
+                    pred_len=30,
+                    model_size='small',
+                    freq='D',
+                    use_full_train=True
+                ),
+                n_trials=300,
+                n_jobs=1,
+                show_progress_bar=True
+            )
+            best_params_moirai = study_moirai.best_params
+            st.write("Mejores hiperparametros Moirai-MoE:")
+            st.json(best_params_moirai)
+            st.write(f"Mejor MAE: {study_moirai.best_value:.4f}")
         
-    """
-    st.subheader("Moirai-MoE (Large)")
-    with st.spinner('Optimizando Moirai-MoE...'):
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        st.write(f"Usando dispositivo: {device}")
-        preload_moirai_module(model_size='base')
-        study_moirai = optuna.create_study(direction="minimize")
-        study_moirai.optimize(
-            lambda trial: objective_moirai_moe_global(
-                trial, 
-                X, 
-                y, 
-                splitter,
-                device=device,
-                pred_len=30,
-                model_size='base',
-                freq='D',
-                use_full_train=True
-            ),
-            n_trials=30,
-            n_jobs=1,
-            show_progress_bar=True
-        )
-        best_params_moirai = study_moirai.best_params
-        st.write("Mejores hiperparametros Moirai-MoE:")
-        st.json(best_params_moirai)
-        st.write(f"Mejor MAE: {study_moirai.best_value:.4f}")
-        st.subheader("Prediccion con mejores parametros")
-        predictions, model = predict_with_best_params(
-            X, y, 
-            best_params_moirai,
-            pred_len=30,
-            model_size='large'
-        )
-        st.line_chart(predictions)
+    
+
 
  
