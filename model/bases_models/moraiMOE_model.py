@@ -111,49 +111,175 @@ class MoiraiMoEWrapper:
         else:
             return np.array([np.median(f.samples, axis=0) for f in forecasts])
 
-def objective_moirai_moe_global(trial, X, y, splitter, device=None, pred_len=30, model_size='large', freq='D', use_full_train=True, oof_storage=None):
-    context_length = trial.suggest_int('context_length', 64, 512, step=32)
+def objective_moirai_moe_global(trial, X, y, splitter, device=None, pred_len=30, model_size='small', freq='D', use_full_train=True, oof_storage=None):
+    
+    y_array = y.values if isinstance(y, pd.Series) else np.array(y)
+    
+    # Calcular tamaños de folds primero
+    fold_sizes = []
+    splitter_check = splitter
+    for train_idx, val_idx in splitter_check.split(y_array):
+        fold_sizes.append((len(train_idx), len(val_idx)))
+    
+    min_train_size = min(fs[0] for fs in fold_sizes)
+    print(f"[DEBUG] Tamaños de folds: {fold_sizes}")
+    print(f"[DEBUG] Mínimo train size: {min_train_size}")
+    
+    # Ajustar rango de context_length
+    max_context = min(512, min_train_size - 10)
+    if max_context < 64:
+        print(f"[ERROR] max_context={max_context} es muy pequeño")
+        return float('inf')
+    
+    context_length = trial.suggest_int('context_length', 64, max_context, step=32)
     patch_size = trial.suggest_categorical('patch_size', [16, 32])
     num_samples = trial.suggest_int('num_samples', 50, 200, step=25)
     batch_size = trial.suggest_categorical('batch_size', [16, 32, 64])
-    y_array = y.values if isinstance(y, pd.Series) else np.array(y)
+    
+    print(f"[DEBUG] Trial params: context={context_length}, patch={patch_size}, samples={num_samples}, batch={batch_size}")
+    
     try:
-        fold_scores, fold_preds, fold_indices = [], [], []
-        for train_idx, val_idx in splitter.split(y_array):
-            y_train, y_val = y_array[train_idx], y_array[val_idx]
-            if len(y_train) < context_length:
+        fold_scores = []
+        fold_preds = []
+        fold_indices = []
+        
+        # Recrear splitter para iterar
+        splitter_iter = splitter
+        
+        for fold_num, (train_idx, val_idx) in enumerate(splitter_iter.split(y_array)):
+            y_train = y_array[train_idx]
+            y_val = y_array[val_idx]
+            
+            print(f"[DEBUG] Fold {fold_num}: train={len(y_train)}, val={len(y_val)}")
+            
+            # Ajustar context_length dinámicamente
+            effective_context = min(context_length, len(y_train) - 1)
+            if effective_context < 32:
+                print(f"[WARN] Fold {fold_num} saltado: effective_context={effective_context}")
                 continue
+            
             wrapper = None
             try:
-                wrapper = MoiraiMoEWrapper(model_size=model_size, prediction_length=min(pred_len, len(y_val)), context_length=min(context_length, len(y_train)), patch_size=patch_size, num_samples=num_samples, batch_size=batch_size, use_cache=True)
+                print(f"[DEBUG] Fold {fold_num}: Creando wrapper con context={effective_context}")
+                
+                wrapper = MoiraiMoEWrapper(
+                    model_size=model_size,
+                    prediction_length=pred_len,
+                    context_length=effective_context,
+                    patch_size=patch_size,
+                    num_samples=num_samples,
+                    batch_size=batch_size,
+                    use_cache=True
+                )
+                
+                print(f"[DEBUG] Fold {fold_num}: Wrapper creado OK")
+                
+                # Preparar datos
                 full_series = np.concatenate([y_train, y_val])
+                print(f"[DEBUG] Fold {fold_num}: full_series len={len(full_series)}")
+                
                 ds = prepare_simple_dataset(full_series, freq=freq)
+                print(f"[DEBUG] Fold {fold_num}: Dataset creado")
+                
                 train_ds, test_template = split(ds, offset=-len(y_val))
-                test_data = test_template.generate_instances(prediction_length=min(pred_len, len(y_val)), windows=1, distance=pred_len)
+                print(f"[DEBUG] Fold {fold_num}: Split OK, val_size={len(y_val)}")
+                
+                # Generar instancias de test
+                n_windows = max(1, len(y_val) // pred_len)
+                print(f"[DEBUG] Fold {fold_num}: n_windows={n_windows}")
+                
+                test_data = test_template.generate_instances(
+                    prediction_length=pred_len,
+                    windows=n_windows,
+                    distance=pred_len
+                )
+                
+                # Convertir a lista para ver cuántos hay
+                test_inputs = list(test_data.input)
+                test_labels = list(test_data.label)
+                print(f"[DEBUG] Fold {fold_num}: test_inputs={len(test_inputs)}, test_labels={len(test_labels)}")
+                
+                if len(test_inputs) == 0:
+                    print(f"[WARN] Fold {fold_num}: No hay instancias de test")
+                    continue
+                
+                # Predecir
+                print(f"[DEBUG] Fold {fold_num}: Iniciando predicción...")
                 forecasts = list(wrapper.predictor.predict(test_data.input))
-                for forecast, label in zip(forecasts, test_data.label):
+                print(f"[DEBUG] Fold {fold_num}: Predicción OK, forecasts={len(forecasts)}")
+                
+                # Recolectar predicciones
+                fold_pred_list = []
+                fold_idx_list = []
+                offset = 0
+                
+                for fc_idx, (forecast, label) in enumerate(zip(forecasts, test_labels)):
                     pred = np.median(forecast.samples, axis=0)
                     actual = label['target']
-                    min_len = min(len(pred), len(actual))
-                    fold_scores.append(mean_absolute_error(actual[:min_len], pred[:min_len]))
-                    fold_preds.append(pred[:min_len])
-                    fold_indices.append(val_idx[:min_len])
+                    actual_len = len(actual)
+                    
+                    print(f"[DEBUG] Fold {fold_num}, Window {fc_idx}: pred_len={len(pred)}, actual_len={actual_len}")
+                    
+                    fold_pred_list.extend(pred[:actual_len])
+                    
+                    # Calcular índices correctos en y original
+                    start_idx = len(y_train) + offset
+                    window_indices = list(range(start_idx, start_idx + actual_len))
+                    
+                    # Convertir a índices originales usando val_idx
+                    if offset + actual_len <= len(val_idx):
+                        original_indices = val_idx[offset:offset + actual_len]
+                        fold_idx_list.extend(original_indices.tolist())
+                    else:
+                        print(f"[WARN] Índices fuera de rango en fold {fold_num}")
+                    
+                    offset += pred_len
+                
+                if fold_pred_list:
+                    # Calcular MAE para este fold
+                    fold_targets = y_array[fold_idx_list]
+                    mae = mean_absolute_error(fold_targets, fold_pred_list)
+                    fold_scores.append(mae)
+                    fold_preds.append(np.array(fold_pred_list))
+                    fold_indices.append(np.array(fold_idx_list))
+                    print(f"[DEBUG] Fold {fold_num}: MAE={mae:.4f}, preds={len(fold_pred_list)}")
+                else:
+                    print(f"[WARN] Fold {fold_num}: No se recolectaron predicciones")
+                    
+            except Exception as e:
+                print(f"[ERROR] Fold {fold_num}: {type(e).__name__}: {e}")
+                import traceback
+                traceback.print_exc()
+                continue
             finally:
                 if wrapper is not None:
                     del wrapper.model, wrapper.predictor, wrapper
                 torch.cuda.empty_cache()
                 gc.collect()
+        
+        print(f"[DEBUG] Total folds exitosos: {len(fold_scores)}")
+        
         if not fold_scores:
+            print("[ERROR] No hay fold_scores, retornando inf")
             return float('inf')
+        
         mean_score = np.mean(fold_scores)
+        print(f"[DEBUG] Mean score: {mean_score:.4f}")
+        
+        # Guardar OOF del mejor trial
         if oof_storage is not None:
             if 'best_score' not in oof_storage or mean_score < oof_storage['best_score']:
                 oof_storage['best_score'] = mean_score
                 oof_storage['preds'] = fold_preds
                 oof_storage['indices'] = fold_indices
+                print(f"[DEBUG] OOF guardado: {sum(len(p) for p in fold_preds)} predicciones totales")
+        
         return mean_score
+        
     except Exception as e:
-        print(f"Error en trial: {e}")
+        print(f"[ERROR] Trial completo falló: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
         torch.cuda.empty_cache()
         gc.collect()
         return float('inf')

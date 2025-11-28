@@ -206,7 +206,7 @@ with tab5:
     st.subheader("Fase 3: Meta-Modelo LSTM")
     if len(oof_df) < 50:
         st.warning(f"Solo hay {len(oof_df)} filas en la matriz OOF. Se recomienda al menos 50.")
-    n_trials_lstm = st.slider("Trials para optimizar LSTM", min_value=10, max_value=100, value=30)
+    n_trials_lstm = 10
     if st.button("Optimizar y Entrenar Meta-Modelo"):
         with st.spinner('Optimizando Meta-Modelo LSTM con Optuna...'):
             meta_model, mae_meta, results, best_params_lstm, study_lstm = optimize_lstm_meta(oof_df, device, n_trials=n_trials_lstm)
