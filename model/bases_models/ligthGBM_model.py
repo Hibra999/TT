@@ -8,7 +8,27 @@ import numpy as np
 from sklearn.metrics import mean_absolute_error
 
 def objective_global(trial, X, y, splitter, oof_storage=None):
-    param = {"boosting_type": trial.suggest_categorical("boosting_type", ["gbdt", "dart", "rf"]), "num_leaves": trial.suggest_int("num_leaves", 31, 200), "max_depth": trial.suggest_int("max_depth", 3, 12), "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True), "n_estimators": trial.suggest_int("n_estimators", 100, 1000), "min_child_samples": trial.suggest_int("min_child_samples", 5, 100), "subsample": trial.suggest_float("subsample", 0.5, 1.0), "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 1.0), "reg_alpha": trial.suggest_float("reg_alpha", 1e-8, 10.0, log=True), "reg_lambda": trial.suggest_float("reg_lambda", 1e-8, 10.0, log=True), "random_state": 42, "verbose": -1}
+    use_linear_tree = trial.suggest_categorical("linear_tree", [True, False])
+    if use_linear_tree:
+        boosting_type = trial.suggest_categorical("boosting_type", ["gbdt", "dart"])
+    else:
+        boosting_type = trial.suggest_categorical("boosting_type", ["gbdt", "dart", "rf"])
+    param = {
+        "boosting_type": boosting_type,
+        "linear_tree": use_linear_tree,
+        "num_leaves": trial.suggest_int("num_leaves", 31, 200),
+        "max_depth": trial.suggest_int("max_depth", 3, 12),
+        "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
+        "n_estimators": trial.suggest_int("n_estimators", 100, 1000),
+        "min_child_samples": trial.suggest_int("min_child_samples", 5, 100),
+        "subsample": trial.suggest_float("subsample", 0.5, 1.0),
+        "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 1.0),
+        "reg_alpha": trial.suggest_float("reg_alpha", 1e-8, 10.0, log=True),
+        "reg_lambda": trial.suggest_float("reg_lambda", 1e-8, 10.0, log=True),
+        "random_state": 42,
+        "device": "gpu", #cambiar aqui cesar
+        "verbose": -1
+    }
     if param["boosting_type"] == "rf":
         param["subsample"] = max(param["subsample"], 0.7)
         param["subsample_freq"] = 1
