@@ -4,7 +4,7 @@ import numpy as np
 
 def objective_catboost_global(trial, X, y, splitter, oof_storage=None):
     bootstrap_type = trial.suggest_categorical("bootstrap_type", ["Bayesian", "Bernoulli"])
-    param = {"iterations": trial.suggest_int("iterations", 100, 1000), "depth": trial.suggest_int("depth", 4, 10), "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True), "l2_leaf_reg": trial.suggest_float("l2_leaf_reg", 1e-3, 10.0, log=True), "min_data_in_leaf": trial.suggest_int("min_data_in_leaf", 5, 100), "loss_function": "RMSE", "verbose": 0, "random_seed": 42, "allow_writing_files": False, "bootstrap_type": bootstrap_type, "task_type": "GPU", "thread_count": 0}
+    param = {"iterations": trial.suggest_int("iterations", 100, 1000), "depth": trial.suggest_int("depth", 4, 10), "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True), "l2_leaf_reg": trial.suggest_float("l2_leaf_reg", 1e-3, 10.0, log=True), "min_data_in_leaf": trial.suggest_int("min_data_in_leaf", 5, 100), "loss_function": "RMSE", "verbose": 0, "random_seed": 42, "allow_writing_files": False, "bootstrap_type": bootstrap_type, "task_type": "CPU"}
     if bootstrap_type == "Bernoulli":
         param["subsample"] = trial.suggest_float("subsample", 0.5, 1.0)
     else:
