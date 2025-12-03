@@ -8,14 +8,10 @@ import numpy as np
 from sklearn.metrics import mean_absolute_error
 
 def objective_global(trial, X, y, splitter, oof_storage=None):
-    use_linear_tree = trial.suggest_categorical("linear_tree", [True, False])
-    if use_linear_tree:
-        boosting_type = trial.suggest_categorical("boosting_type", ["gbdt", "dart"])
-    else:
-        boosting_type = trial.suggest_categorical("boosting_type", ["gbdt", "dart", "rf"])
+    boosting_type = trial.suggest_categorical("boosting_type", ["gbdt", "dart", "rf"])
     param = {
         "boosting_type": boosting_type,
-        "linear_tree": use_linear_tree,
+        "linear_tree": False,
         "num_leaves": trial.suggest_int("num_leaves", 31, 200),
         "max_depth": trial.suggest_int("max_depth", 3, 12),
         "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
