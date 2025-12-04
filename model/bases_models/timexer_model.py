@@ -1,4 +1,3 @@
-# codigo gracias a https://github.com/thuml/Time-Series-Library/blob/main/models/TimeXer.py
 import math
 from math import sqrt
 import numpy as np
@@ -6,8 +5,9 @@ import optuna
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader, Subset
+from torch.utils.data import Dataset, DataLoader
 from types import SimpleNamespace
+
 
 class FlattenHead(nn.Module):
     def __init__(self, n_vars, nf, target_window, head_dropout=0):
@@ -17,7 +17,7 @@ class FlattenHead(nn.Module):
         self.linear = nn.Linear(nf, target_window)
         self.dropout = nn.Dropout(head_dropout)
 
-    def forward(self, x):  # x: [bs x nvars x d_model x patch_num]
+    def forward(self, x):
         x = self.flatten(x)
         x = self.linear(x)
         x = self.dropout(x)
@@ -27,23 +27,17 @@ class FlattenHead(nn.Module):
 class EnEmbedding(nn.Module):
     def __init__(self, n_vars, d_model, patch_len, dropout):
         super(EnEmbedding, self).__init__()
-        # Patching
         self.patch_len = patch_len
-
         self.value_embedding = nn.Linear(patch_len, d_model, bias=False)
         self.glb_token = nn.Parameter(torch.randn(1, n_vars, 1, d_model))
         self.position_embedding = PositionalEmbedding(d_model)
-
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
-        # do patching
         n_vars = x.shape[1]
         glb = self.glb_token.repeat((x.shape[0], 1, 1, 1))
-
         x = x.unfold(dimension=-1, size=self.patch_len, step=self.patch_len)
         x = torch.reshape(x, (x.shape[0] * x.shape[1], x.shape[2], x.shape[3]))
-        # Input encoding
         x = self.value_embedding(x) + self.position_embedding(x)
         x = torch.reshape(x, (-1, n_vars, x.shape[-2], x.shape[-1]))
         x = torch.cat([x, glb], dim=2)
@@ -61,10 +55,8 @@ class Encoder(nn.Module):
     def forward(self, x, cross, x_mask=None, cross_mask=None, tau=None, delta=None):
         for layer in self.layers:
             x = layer(x, cross, x_mask=x_mask, cross_mask=cross_mask, tau=tau, delta=delta)
-
         if self.norm is not None:
             x = self.norm(x)
-
         if self.projection is not None:
             x = self.projection(x)
         return x
@@ -93,7 +85,6 @@ class EncoderLayer(nn.Module):
             tau=tau, delta=None
         )[0])
         x = self.norm1(x)
-
         x_glb_ori = x[:, -1, :].unsqueeze(1)
         x_glb = torch.reshape(x_glb_ori, (B, -1, D))
         x_glb_attn = self.dropout(self.cross_attention(
@@ -105,17 +96,13 @@ class EncoderLayer(nn.Module):
                                    (x_glb_attn.shape[0] * x_glb_attn.shape[1], x_glb_attn.shape[2])).unsqueeze(1)
         x_glb = x_glb_ori + x_glb_attn
         x_glb = self.norm2(x_glb)
-
         y = x = torch.cat([x[:, :-1, :], x_glb], dim=1)
-
         y = self.dropout(self.activation(self.conv1(y.transpose(-1, 1))))
         y = self.dropout(self.conv2(y).transpose(-1, 1))
-
         return self.norm3(x + y)
 
 
 class Model(nn.Module):
-
     def __init__(self, configs):
         super(Model, self).__init__()
         self.task_name = configs.task_name
@@ -126,13 +113,9 @@ class Model(nn.Module):
         self.patch_len = configs.patch_len
         self.patch_num = int(configs.seq_len // configs.patch_len)
         self.n_vars = 1 if configs.features == 'MS' else configs.enc_in
-        # Embedding
         self.en_embedding = EnEmbedding(self.n_vars, configs.d_model, self.patch_len, configs.dropout)
-
         self.ex_embedding = DataEmbedding_inverted(configs.seq_len, configs.d_model, configs.embed, configs.freq,
                                                    configs.dropout)
-
-        # Encoder-only architecture
         self.encoder = Encoder(
             [
                 EncoderLayer(
@@ -159,71 +142,52 @@ class Model(nn.Module):
 
     def forecast(self, x_enc, x_mark_enc, x_dec, x_mark_dec):
         if self.use_norm:
-            # Normalization from Non-stationary Transformer
             means = x_enc.mean(1, keepdim=True).detach()
             x_enc = x_enc - means
             stdev = torch.sqrt(torch.var(x_enc, dim=1, keepdim=True, unbiased=False) + 1e-5)
             x_enc /= stdev
-
         _, _, N = x_enc.shape
-
         en_embed, n_vars = self.en_embedding(x_enc[:, :, -1].unsqueeze(-1).permute(0, 2, 1))
         ex_embed = self.ex_embedding(x_enc[:, :, :-1], x_mark_enc)
-
         enc_out = self.encoder(en_embed, ex_embed)
         enc_out = torch.reshape(
             enc_out, (-1, n_vars, enc_out.shape[-2], enc_out.shape[-1]))
-        # z: [bs x nvars x d_model x patch_num]
         enc_out = enc_out.permute(0, 1, 3, 2)
-
-        dec_out = self.head(enc_out)  # z: [bs x nvars x target_window]
+        dec_out = self.head(enc_out)
         dec_out = dec_out.permute(0, 2, 1)
-
         if self.use_norm:
-            # De-Normalization from Non-stationary Transformer
             dec_out = dec_out * (stdev[:, 0, -1:].unsqueeze(1).repeat(1, self.pred_len, 1))
             dec_out = dec_out + (means[:, 0, -1:].unsqueeze(1).repeat(1, self.pred_len, 1))
-
         return dec_out
-
 
     def forecast_multi(self, x_enc, x_mark_enc, x_dec, x_mark_dec):
         if self.use_norm:
-            # Normalization from Non-stationary Transformer
             means = x_enc.mean(1, keepdim=True).detach()
             x_enc = x_enc - means
             stdev = torch.sqrt(torch.var(x_enc, dim=1, keepdim=True, unbiased=False) + 1e-5)
             x_enc /= stdev
-
         _, _, N = x_enc.shape
-
         en_embed, n_vars = self.en_embedding(x_enc.permute(0, 2, 1))
         ex_embed = self.ex_embedding(x_enc, x_mark_enc)
-
         enc_out = self.encoder(en_embed, ex_embed)
         enc_out = torch.reshape(
             enc_out, (-1, n_vars, enc_out.shape[-2], enc_out.shape[-1]))
-        # z: [bs x nvars x d_model x patch_num]
         enc_out = enc_out.permute(0, 1, 3, 2)
-
-        dec_out = self.head(enc_out)  # z: [bs x nvars x target_window]
+        dec_out = self.head(enc_out)
         dec_out = dec_out.permute(0, 2, 1)
-
         if self.use_norm:
-            # De-Normalization from Non-stationary Transformer
             dec_out = dec_out * (stdev[:, 0, :].unsqueeze(1).repeat(1, self.pred_len, 1))
             dec_out = dec_out + (means[:, 0, :].unsqueeze(1).repeat(1, self.pred_len, 1))
-
         return dec_out
 
     def forward(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask=None):
         if self.task_name == 'long_term_forecast' or self.task_name == 'short_term_forecast':
             if self.features == 'M':
                 dec_out = self.forecast_multi(x_enc, x_mark_enc, x_dec, x_mark_dec)
-                return dec_out[:, -self.pred_len:, :]  # [B, L, D]
+                return dec_out[:, -self.pred_len:, :]
             else:
                 dec_out = self.forecast(x_enc, x_mark_enc, x_dec, x_mark_dec)
-                return dec_out[:, -self.pred_len:, :]  # [B, L, D]
+                return dec_out[:, -self.pred_len:, :]
         else:
             return None
 
@@ -251,18 +215,13 @@ class FullAttention(nn.Module):
         B, L, H, E = queries.shape
         _, S, _, D = values.shape
         scale = self.scale or 1. / sqrt(E)
-
         scores = torch.einsum("blhe,bshe->bhls", queries, keys)
-
         if self.mask_flag:
             if attn_mask is None:
                 attn_mask = TriangularCausalMask(B, L, device=queries.device)
-
             scores.masked_fill_(attn_mask.mask, -np.inf)
-
         A = self.dropout(torch.softmax(scale * scores, dim=-1))
         V = torch.einsum("bhls,bshd->blhd", A, values)
-
         if self.output_attention:
             return V.contiguous(), A
         else:
@@ -270,13 +229,10 @@ class FullAttention(nn.Module):
 
 
 class AttentionLayer(nn.Module):
-    def __init__(self, attention, d_model, n_heads, d_keys=None,
-                 d_values=None):
+    def __init__(self, attention, d_model, n_heads, d_keys=None, d_values=None):
         super(AttentionLayer, self).__init__()
-
         d_keys = d_keys or (d_model // n_heads)
         d_values = d_values or (d_model // n_heads)
-
         self.inner_attention = attention
         self.query_projection = nn.Linear(d_model, d_keys * n_heads)
         self.key_projection = nn.Linear(d_model, d_keys * n_heads)
@@ -288,21 +244,13 @@ class AttentionLayer(nn.Module):
         B, L, _ = queries.shape
         _, S, _ = keys.shape
         H = self.n_heads
-
         queries = self.query_projection(queries).view(B, L, H, -1)
         keys = self.key_projection(keys).view(B, S, H, -1)
         values = self.value_projection(values).view(B, S, H, -1)
-
         out, attn = self.inner_attention(
-            queries,
-            keys,
-            values,
-            attn_mask,
-            tau=tau,
-            delta=delta
+            queries, keys, values, attn_mask, tau=tau, delta=delta
         )
         out = out.view(B, L, -1)
-
         return self.out_projection(out), attn
 
 
@@ -314,29 +262,23 @@ class DataEmbedding_inverted(nn.Module):
 
     def forward(self, x, x_mark):
         x = x.permute(0, 2, 1)
-        # x: [Batch Variate Time]
         if x_mark is None:
             x = self.value_embedding(x)
         else:
             x = self.value_embedding(torch.cat([x, x_mark.permute(0, 2, 1)], 1))
-        # x: [Batch Variate d_model]
         return self.dropout(x)
 
 
 class PositionalEmbedding(nn.Module):
     def __init__(self, d_model, max_len=5000):
         super(PositionalEmbedding, self).__init__()
-        # Compute the positional encodings once in log space.
         pe = torch.zeros(max_len, d_model).float()
         pe.require_grad = False
-
         position = torch.arange(0, max_len).float().unsqueeze(1)
         div_term = (torch.arange(0, d_model, 2).float()
                     * -(math.log(10000.0) / d_model)).exp()
-
         pe[:, 0::2] = torch.sin(position * div_term)
         pe[:, 1::2] = torch.cos(position * div_term)
-
         pe = pe.unsqueeze(0)
         self.register_buffer('pe', pe)
 
@@ -349,22 +291,19 @@ class SeqDataset(Dataset):
         assert len(X) == len(y)
         self.seq_len = seq_len
         self.pred_len = pred_len
-        
         X = np.nan_to_num(X.astype(np.float32), nan=0.0, posinf=0.0, neginf=0.0)
         y = np.nan_to_num(y.astype(np.float32), nan=0.0, posinf=0.0, neginf=0.0).reshape(-1, 1)
-        
         self.data = np.concatenate([X, y], axis=1)
         self.n_samples = len(self.data) - self.seq_len - self.pred_len + 1
-        
         if self.n_samples <= 0:
             raise ValueError(f"Datos insuficientes: {len(self.data)} para seq_len={seq_len}, pred_len={pred_len}")
-    
+
     def __len__(self):
         return self.n_samples
-    
+
     def __getitem__(self, idx):
-        x = self.data[idx : idx + self.seq_len, :]
-        y = self.data[idx + self.seq_len : idx + self.seq_len + self.pred_len, -1]
+        x = self.data[idx: idx + self.seq_len, :]
+        y = self.data[idx + self.seq_len: idx + self.seq_len + self.pred_len, -1]
         return torch.from_numpy(x), torch.from_numpy(y)
 
 
@@ -410,49 +349,77 @@ def build_model_from_trial(trial, enc_in, seq_len, pred_len, device, features='M
                     p.requires_grad = False
     return model
 
-def create_fold_loaders(X, y, t_idx, v_idx, seq_len, pred_len, batch_size):
-    start = int(t_idx[0])
-    end = int(v_idx[-1])
-    X_fold = X.iloc[start:end + 1].reset_index(drop=True).values
-    y_fold = y.iloc[start:end + 1].reset_index(drop=True).values
-    full_ds = SeqDataset(X_fold, y_fold, seq_len, pred_len)
-    val_start = int(v_idx[0]) - start
-    n_train = val_start - seq_len - pred_len + 1
-    if n_train <= 0:
-        raise ValueError(f"Insuficientes datos de entrenamiento")
-    train_idx = list(range(n_train))
-    val_window_start = val_start - seq_len
-    if val_window_start < 0 or val_window_start >= len(full_ds):
-        raise ValueError(f"Ventana de validación fuera de rango")
-    val_idx = [val_window_start]
-    train_ds = Subset(full_ds, train_idx)
-    val_ds = Subset(full_ds, val_idx)
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, drop_last=True)
-    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, drop_last=False)
-    return train_loader, val_loader
-
 
 def objective_timexer_global(trial, X, y, splitter, device=None, seq_len=96, pred_len=30, features='MS', pretrained_path=None, freeze_backbone=False, oof_storage=None):
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
     enc_in = X.shape[1] + 1
     batch_size = trial.suggest_categorical("batch_size", [16, 32, 64])
     lr = trial.suggest_float("lr", 1e-5, 1e-3, log=True)
     weight_decay = trial.suggest_float("weight_decay", 1e-6, 1e-3, log=True)
     max_epochs = trial.suggest_int("max_epochs", 10, 50)
     patience_val = trial.suggest_int("patience", 5, 15)
+    
+    X_values = X.values if hasattr(X, 'values') else np.array(X)
+    y_values = y.values if hasattr(y, 'values') else np.array(y)
+    
+    X_values = np.nan_to_num(X_values.astype(np.float32), nan=0.0, posinf=0.0, neginf=0.0)
+    y_values = np.nan_to_num(y_values.astype(np.float32), nan=0.0, posinf=0.0, neginf=0.0).reshape(-1, 1)
+    full_data = np.concatenate([X_values, y_values], axis=1)
+    
     fold_scores, fold_preds, fold_indices = [], [], []
+    
     for fold_num, (t_idx, v_idx) in enumerate(splitter.split(y)):
-        try:
-            train_loader, val_loader = create_fold_loaders(X, y, t_idx, v_idx, seq_len, pred_len, batch_size)
-        except:
-            return float("inf")
-        model = build_model_from_trial(trial, enc_in=enc_in, seq_len=seq_len, pred_len=pred_len, device=device, features=features, pretrained_path=pretrained_path, freeze_backbone=freeze_backbone)
+        train_start = int(t_idx[0])
+        train_end = int(t_idx[-1]) + 1
+        
+        if train_end - train_start < seq_len + pred_len + 10:
+            continue
+        
+        train_data = full_data[train_start:train_end]
+        
+        class TrainDataset(Dataset):
+            def __init__(self, data, seq_len, pred_len):
+                self.data = data
+                self.seq_len = seq_len
+                self.pred_len = pred_len
+                self.n_samples = len(data) - seq_len - pred_len + 1
+            
+            def __len__(self):
+                return max(0, self.n_samples)
+            
+            def __getitem__(self, idx):
+                x = self.data[idx:idx + self.seq_len]
+                y = self.data[idx + self.seq_len:idx + self.seq_len + self.pred_len, -1]
+                return torch.from_numpy(x.astype(np.float32)), torch.from_numpy(y.astype(np.float32))
+        
+        train_ds = TrainDataset(train_data, seq_len, pred_len)
+        if len(train_ds) <= 0:
+            continue
+        
+        train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, drop_last=True)
+        if len(train_loader) == 0:
+            continue
+        
+        model = build_model_from_trial(
+            trial, enc_in=enc_in, seq_len=seq_len, pred_len=pred_len,
+            device=device, features=features, pretrained_path=pretrained_path,
+            freeze_backbone=freeze_backbone
+        )
+        
         criterion = nn.L1Loss()
-        optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=lr, weight_decay=weight_decay)
-        best_val, patience_counter, best_preds = float("inf"), 0, None
+        optimizer = torch.optim.AdamW(
+            filter(lambda p: p.requires_grad, model.parameters()),
+            lr=lr, weight_decay=weight_decay
+        )
+        
+        best_train_loss = float("inf")
+        patience_counter = 0
+        
         for epoch in range(max_epochs):
             model.train()
+            epoch_losses = []
             for x_batch, y_batch in train_loader:
                 x_batch, y_batch = x_batch.to(device), y_batch.to(device)
                 optimizer.zero_grad()
@@ -463,35 +430,71 @@ def objective_timexer_global(trial, X, y, splitter, device=None, seq_len=96, pre
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 optimizer.step()
-            model.eval()
-            val_losses, epoch_preds = [], []
-            with torch.no_grad():
-                for x_batch, y_batch in val_loader:
-                    x_batch, y_batch = x_batch.to(device), y_batch.to(device)
-                    out = model(x_batch, None, None, None).squeeze(-1)
-                    val_losses.append(criterion(out, y_batch).item())
-                    epoch_preds.append(out.cpu().numpy())
-            mean_val = float(np.mean(val_losses))
-            if np.isnan(mean_val):
-                return float("inf")
-            if mean_val < best_val:
-                best_val = mean_val
-                best_preds = np.concatenate(epoch_preds, axis=0).flatten() if len(epoch_preds) > 1 else epoch_preds[0].flatten()
+                epoch_losses.append(loss.item())
+            
+            mean_train_loss = np.mean(epoch_losses)
+            if mean_train_loss < best_train_loss:
+                best_train_loss = mean_train_loss
                 patience_counter = 0
             else:
                 patience_counter += 1
                 if patience_counter >= patience_val:
                     break
-            trial.report(mean_val, epoch)
-            if trial.should_prune():
-                raise optuna.TrialPruned()
-        fold_scores.append(best_val)
-        fold_preds.append(best_preds)
-        fold_indices.append(v_idx)
+        
+        model.eval()
+        val_preds = []
+        val_indices = []
+        
+        with torch.no_grad():
+            for target_idx in v_idx:
+                target_idx = int(target_idx)
+                window_end = target_idx
+                window_start = window_end - seq_len
+                
+                if window_start < 0:
+                    continue
+                
+                x_window = full_data[window_start:window_end]
+                
+                if len(x_window) != seq_len:
+                    continue
+                
+                x_tensor = torch.from_numpy(x_window.astype(np.float32)).unsqueeze(0).to(device)
+                out = model(x_tensor, None, None, None).squeeze(-1)
+                pred_value = out[0, 0].cpu().numpy()
+                
+                val_preds.append(float(pred_value))
+                val_indices.append(target_idx)
+        
+        if len(val_preds) == 0:
+            continue
+        
+        val_preds = np.array(val_preds)
+        val_indices = np.array(val_indices)
+        val_targets = y_values[val_indices].flatten()
+        
+        fold_mae = np.mean(np.abs(val_preds - val_targets))
+        
+        if np.isnan(fold_mae):
+            continue
+        
+        fold_scores.append(fold_mae)
+        fold_preds.append(val_preds)
+        fold_indices.append(val_indices)
+        
+        trial.report(fold_mae, fold_num)
+        if trial.should_prune():
+            raise optuna.TrialPruned()
+    
+    if not fold_scores:
+        return float("inf")
+    
     mean_score = float(np.mean(fold_scores))
+    
     if oof_storage is not None:
         if 'best_score' not in oof_storage or mean_score < oof_storage['best_score']:
             oof_storage['best_score'] = mean_score
             oof_storage['preds'] = fold_preds
             oof_storage['indices'] = fold_indices
+    
     return mean_score

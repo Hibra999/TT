@@ -183,7 +183,7 @@ with tab5:
         st.write("Optimizando CatBoost...")
         with st.spinner('Optimizando CatBoost'):
             study_cb=optuna.create_study(direction="minimize")
-            study_cb.optimize(lambda trial:objective_catboost_global(trial,X_train,y_train,splitter,oof_storage=oof_cb),n_trials=n_trials_cb,n_jobs=1)
+            study_cb.optimize(lambda trial:objective_catboost_global(trial,X_train,y_train,splitter,oof_storage=oof_cb),n_trials=n_trials_cb,n_jobs=-1)
             best_params_cb=study_cb.best_params
             st.json(best_params_cb)
             st.write(f"Mejor MAE CatBoost: {study_cb.best_value:.4f}")
