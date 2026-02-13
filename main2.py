@@ -1,159 +1,140 @@
-import pandas as pd;import numpy as np;import seaborn as sns;import plotly.express as px;import warnings;import streamlit as st;import matplotlib.pyplot as plt;import optuna;from data.yfinance_data import download_yf;from data.ccxt_data import download_cx;from features.macroeconomics import macroeconomicos;from model.bases_models.ligthGBM_model import objective_global,train_final_and_predict_test as lgb_predict_test;from model.bases_models.catboost_model import objective_catboost_global,train_final_and_predict_test as cb_predict_test;from model.bases_models.timexer_model import objective_timexer_global,train_final_and_predict_test as tx_predict_test;from model.bases_models.moraiMOE_model import objective_moirai_moe_global,preload_moirai_module,train_final_and_predict_test as moirai_predict_test;from model.meta_model.lstm_model import optimize_lstm_meta,get_average_weights;from preprocessing.oof_generators import collect_oof_predictions,build_oof_dataframe;from preprocessing.walk_forward import wfrw;from features.tecnical_indicators import TA;from features.top_n import top_k;from plotly.subplots import make_subplots;import plotly.graph_objects as go;from sklearn.preprocessing import MinMaxScaler;from sklearn.metrics import mean_squared_error,mean_absolute_error,r2_score;import torch;warnings.filterwarnings("ignore")
-BG_COLOR='#f6f1e9';COLORS={'primary':'#2563eb','secondary':'#dc2626','success':'#16a34a','danger':'#dc2626','purple':'#7c3aed','brown':'#92400e','pink':'#db2777','gray':'#6b7280','olive':'#84cc16','cyan':'#0891b2','black':'#1f2937','background':'#f6f1e9','orange':'#ea580c'};FONT_FAMILY="Times New Roman, serif";FONT_SIZES={'title':28,'subtitle':22,'axis_title':20,'tick':16,'legend':18,'annotation':16}
-def get_professional_layout(title,xaxis_title,yaxis_title,height=500,show_legend=True): return dict(template='plotly_white',plot_bgcolor=BG_COLOR,paper_bgcolor=BG_COLOR,title=dict(text=f'<b>{title}</b>',x=0.5,xanchor='center',font=dict(size=FONT_SIZES['title'],family=FONT_FAMILY,color=COLORS['black'])),xaxis=dict(title=dict(text=xaxis_title,font=dict(size=FONT_SIZES['axis_title'],family=FONT_FAMILY,color=COLORS['black'])),tickfont=dict(size=FONT_SIZES['tick'],family=FONT_FAMILY,color=COLORS['black']),showgrid=True,gridwidth=1,gridcolor='rgba(128, 128, 128, 0.15)',linecolor=COLORS['black'],linewidth=1.5,mirror=True,showline=True),yaxis=dict(title=dict(text=yaxis_title,font=dict(size=FONT_SIZES['axis_title'],family=FONT_FAMILY,color=COLORS['black'])),tickfont=dict(size=FONT_SIZES['tick'],family=FONT_FAMILY,color=COLORS['black']),showgrid=True,gridwidth=1,gridcolor='rgba(128, 128, 128, 0.15)',linecolor=COLORS['black'],linewidth=1.5,mirror=True,showline=True),height=height,margin=dict(l=100,r=50,t=100,b=80),hovermode='x unified',showlegend=show_legend,legend=dict(font=dict(size=FONT_SIZES['legend'],family=FONT_FAMILY),bgcolor='rgba(255, 255, 255, 0.95)',bordercolor=COLORS['gray'],borderwidth=1,orientation='h',yanchor='bottom',y=1.02,xanchor='center',x=0.5))
-st.set_page_config(layout="wide")
-with st.sidebar:
- start,end="2020-01-01","2025-10-31"
- @st.cache_data
- def load_data(): tokens=['KO','AAPL','NVDA','JNJ','^GSPC',"GC=F","CBOE"];dy=download_yf(tokens,start,end);cryptos=["BTC/USDT","ETH/USDT"];dc=download_cx(cryptos,start,end);return dy,dc
- load_data();token=st.selectbox(label="ACTIVO FINANCIERO: ",options=['KO','AAPL','NVDA','JNJ','^GSPC',"BTC-USDT","ETH-USDT"]);st.divider();st.subheader("Configuracion de Trials");n_trials_lgb=st.number_input("Trials LightGBM",min_value=1,max_value=1000,value=5,step=1);n_trials_cb=st.number_input("Trials CatBoost",min_value=1,max_value=1000,value=5,step=1);n_trials_tx=st.number_input("Trials TimeXer",min_value=1,max_value=1000,value=5,step=1);n_trials_moirai=st.number_input("Trials Moirai",min_value=1,max_value=1000,value=5,step=1);n_trials_lstm=st.number_input("Trials Meta LSTM",min_value=1,max_value=1000,value=3,step=1)
-st.title('TT');df=pd.read_csv(rf"C:\Users\hibra\Desktop\TT\data\tokens\{token}_2020-2025.csv");tab1,tab2,tab3,tab4,tab5,tab6=st.tabs(["Datos & Retornos","Caracteristicas (TA/Macro)","MICFS","Walk Forward","BaseModelsTrain","Visualizacion Final"])
-with tab1:
- col1,col2=st.columns(2)
- with col1: st.subheader("CLOSE");fig_close=go.Figure();fig_close.add_trace(go.Scatter(x=list(range(len(df))),y=df["Close"],mode='lines',name='Precio de Cierre',line=dict(color=COLORS['primary'],width=2)));fig_close.update_layout(**get_professional_layout(title=f'Precio de Cierre - {token}',xaxis_title='Periodo (dias)',yaxis_title='Precio (USD)',height=450,show_legend=False));st.plotly_chart(fig_close,use_container_width=True);st.dataframe(df.tail(),use_container_width=True)
- with col2: st.subheader("LOG RETURN");log_close=np.log(df["Close"]/df["Close"].shift(-1)).dropna();fig_log=go.Figure();fig_log.add_trace(go.Scatter(x=list(range(len(log_close))),y=log_close,mode='lines',name='Log Return',line=dict(color=COLORS['primary'],width=1.5)));fig_log.add_hline(y=0,line_dash="solid",line_color=COLORS['black'],line_width=1.5);fig_log.update_layout(**get_professional_layout(title='Retornos Logaritmicos',xaxis_title='Periodo (dias)',yaxis_title='Log Return',height=380,show_legend=False));st.plotly_chart(fig_log,use_container_width=True);st.subheader("Visualizacion normalizada");log_close_viz=(log_close-log_close.min())/(log_close.max()-log_close.min());fig_norm=go.Figure();fig_norm.add_trace(go.Scatter(x=list(range(len(log_close_viz))),y=log_close_viz,mode='lines',name='Normalizado',line=dict(color=COLORS['purple'],width=2)));fig_norm.update_layout(**get_professional_layout(title='Retornos Normalizados [0, 1]',xaxis_title='Periodo (dias)',yaxis_title='Valor Normalizado',height=320,show_legend=False));st.plotly_chart(fig_norm,use_container_width=True)
-with tab2:
- col1,col2=st.columns(2)
- with col1: st.subheader("Indicadores Tecnicos");df_ta=TA(df);st.dataframe(df_ta.tail(),use_container_width=True)
- with col2: st.subheader("Datos Macroeconomicos");df_ma=macroeconomicos(df["Date_final"]);st.dataframe(df_ma.tail(),use_container_width=True)
-with tab3:
- df_ta=df_ta.reset_index(drop=True);df_ma=df_ma.reset_index(drop=True);st.subheader("DF_final");df_final=pd.concat([df_ta,df_ma],axis=1).iloc[1:];log_close=log_close.reset_index(drop=True);min_len=min(len(df_final),len(log_close));df_final=df_final.iloc[:min_len].reset_index(drop=True);log_close=log_close.iloc[:min_len].reset_index(drop=True);cols_to_drop=[col for col in df_final.columns if df_final[col].max()-df_final[col].min()<1e-8]
- for col in cols_to_drop: st.warning(f"Columna {col} eliminada (valores constantes)")
- df_final=df_final.drop(columns=cols_to_drop);df_final=df_final.replace([np.inf,-np.inf],0.0);log_close=log_close.replace([np.inf,-np.inf],0.0)
- if log_close.max()-log_close.min()<1e-8: st.error("log_close tiene valores constantes");st.stop()
- n_total=len(df_final);train_size=int(len(df_final)*0.9);X_train_raw=df_final.iloc[:train_size].copy();X_test_raw=df_final.iloc[train_size:].copy();y_train_raw=log_close.iloc[:train_size].copy();y_test_raw=log_close.iloc[train_size:].copy();scaler_features=MinMaxScaler();X_train_scaled=pd.DataFrame(scaler_features.fit_transform(X_train_raw),columns=X_train_raw.columns,index=X_train_raw.index);X_test_scaled=pd.DataFrame(scaler_features.transform(X_test_raw),columns=X_test_raw.columns,index=X_test_raw.index);scaler_target=MinMaxScaler();y_train=pd.Series(scaler_target.fit_transform(y_train_raw.values.reshape(-1,1)).flatten(),index=y_train_raw.index,name='log_close');y_test=pd.Series(scaler_target.transform(y_test_raw.values.reshape(-1,1)).flatten(),index=y_test_raw.index,name='log_close');st.write(f"Train size: {len(X_train_scaled)}, Test size: {len(X_test_scaled)}");st.dataframe(X_train_scaled.tail(),use_container_width=True);st.subheader("MIC: Top N Caracteristicas (solo con train)");features,valores_mic=top_k(X_train_scaled,y_train,15);df_importance=pd.DataFrame(list(valores_mic.items()),columns=['Feature','Score']).sort_values('Score',ascending=True);fig_mic=go.Figure();fig_mic.add_trace(go.Bar(y=df_importance['Feature'],x=df_importance['Score'],orientation='h',marker=dict(color=df_importance['Score'],colorscale='Viridis',showscale=True,colorbar=dict(title=dict(text='MIC Score',side='right',font=dict(size=FONT_SIZES['axis_title'],family=FONT_FAMILY)),tickfont=dict(size=FONT_SIZES['tick'],family=FONT_FAMILY)),line=dict(color='rgba(0,0,0,0.3)',width=1)),text=df_importance['Score'].round(3),textposition='outside',textfont=dict(size=FONT_SIZES['annotation'],family=FONT_FAMILY,color=COLORS['black'])));layout_mic=get_professional_layout(title='Maximal Information Coefficient (MIC) - Importancia de Caracteristicas',xaxis_title='MIC Score',yaxis_title='',height=550,show_legend=False);layout_mic['margin']=dict(l=200,r=120,t=100,b=80);layout_mic['xaxis']['range']=[0,df_importance['Score'].max()*1.2];fig_mic.update_layout(**layout_mic);st.plotly_chart(fig_mic,use_container_width=True);X_train=X_train_scaled[features].reset_index(drop=True);X_test=X_test_scaled[features].reset_index(drop=True);y_train=y_train.reset_index(drop=True);y_test=y_test.reset_index(drop=True);st.dataframe(X_train,use_container_width=True)
-with tab4:
- k=5;splitter=wfrw(y_train,k=k,fh_val=30);fig_folds=make_subplots(rows=k,cols=1,shared_xaxes=True,vertical_spacing=0.06,subplot_titles=[f'<b>Fold {i+1}</b>' for i in range(k)])
- for i,(t_idx,v_idx) in enumerate(wfrw(y_train,k=k,fh_val=30).split(y_train)): fig_folds.add_trace(go.Scatter(x=y_train.index[t_idx].tolist(),y=y_train.iloc[t_idx].tolist(),mode='lines',name='Entrenamiento',line=dict(color=COLORS['primary'],width=2.5),showlegend=(i==0)),row=i+1,col=1);fig_folds.add_trace(go.Scatter(x=y_train.index[v_idx].tolist(),y=y_train.iloc[v_idx].tolist(),mode='lines',name='Validacion',line=dict(color=COLORS['secondary'],width=3.5),showlegend=(i==0)),row=i+1,col=1)
- fig_folds.update_layout(height=1000,template='plotly_white',plot_bgcolor=BG_COLOR,paper_bgcolor=BG_COLOR,title=dict(text='<b>Walk-Forward Cross-Validation (K=5)</b>',x=0.5,xanchor='center',font=dict(size=FONT_SIZES['title']+4,family=FONT_FAMILY,color=COLORS['black'])),margin=dict(l=100,r=50,t=140,b=80),showlegend=True,legend=dict(font=dict(size=FONT_SIZES['legend']+4,family=FONT_FAMILY),bgcolor='rgba(255, 255, 255, 0.95)',bordercolor=COLORS['gray'],borderwidth=2,orientation='v',yanchor='top',y=0.99,xanchor='right',x=0.99))
- for annotation in fig_folds['layout']['annotations']: annotation['font']=dict(size=FONT_SIZES['subtitle']+4,family=FONT_FAMILY,color=COLORS['black'])
- for i in range(k): fig_folds.update_yaxes(title_text='Valor',title_font=dict(size=FONT_SIZES['axis_title']+2,family=FONT_FAMILY),tickfont=dict(size=FONT_SIZES['tick']+2,family=FONT_FAMILY),showgrid=True,gridcolor='rgba(128,128,128,0.15)',row=i+1,col=1);fig_folds.update_xaxes(showgrid=True,gridcolor='rgba(128,128,128,0.15)',tickfont=dict(size=FONT_SIZES['tick']+2,family=FONT_FAMILY),row=i+1,col=1)
- fig_folds.update_xaxes(title_text='Indice Temporal',title_font=dict(size=FONT_SIZES['axis_title']+2,family=FONT_FAMILY),row=k,col=1);st.plotly_chart(fig_folds,use_container_width=True)
-with tab5:
- device=torch.device('cuda' if torch.cuda.is_available() else 'cpu');st.write(f"Device: {device}");st.subheader("Configuracion de Entrenamiento");col1,col2,col3,col4,col5=st.columns(5);col1.metric("LGB Trials",n_trials_lgb);col2.metric("CB Trials",n_trials_cb);col3.metric("TX Trials",n_trials_tx);col4.metric("Moirai Trials",n_trials_moirai);col5.metric("Meta Trials",n_trials_lstm)
- if st.button("Iniciar Entrenamiento de Modelos",type="primary",use_container_width=True):
-  oof_lgb,oof_cb,oof_tx,oof_moirai={},{},{},{};st.subheader("Fase 1: Optimizacion de Hiperparametros (Walk-Forward en Train)")
-  st.write("Optimizando LightGBM...")
-  with st.spinner('Optimizando LGB'): study_lgb=optuna.create_study(direction="minimize");study_lgb.optimize(lambda trial:objective_global(trial,X_train,y_train,splitter,oof_storage=oof_lgb),n_trials=n_trials_lgb,n_jobs=-1);best_params_lgb=oof_lgb.get('params',study_lgb.best_params);st.json(best_params_lgb);st.write(f"Mejor MAE CV LGB: {study_lgb.best_value:.4f}")
-  st.write("Optimizando CatBoost...")
-  with st.spinner('Optimizando CatBoost'): study_cb=optuna.create_study(direction="minimize");study_cb.optimize(lambda trial:objective_catboost_global(trial,X_train,y_train,splitter,oof_storage=oof_cb),n_trials=n_trials_cb,n_jobs=-1);best_params_cb=oof_cb.get('params',study_cb.best_params);st.json(best_params_cb);st.write(f"Mejor MAE CV CatBoost: {study_cb.best_value:.4f}")
-  st.write("Optimizando TimeXer...")
-  with st.spinner('Optimizando TimeXer'): study_tx=optuna.create_study(direction="minimize");study_tx.optimize(lambda trial:objective_timexer_global(trial,X_train,y_train,splitter,device=device,seq_len=96,pred_len=30,features='MS',oof_storage=oof_tx),n_trials=n_trials_tx,n_jobs=1);best_params_tx=study_tx.best_params;st.json(best_params_tx);st.write(f"Mejor MAE CV TimeXer: {study_tx.best_value:.4f}")
-  st.write("Optimizando Moirai-MoE...")
-  with st.spinner('Optimizando Moirai-MoE'): preload_moirai_module(model_size='small');study_moirai=optuna.create_study(direction="minimize");study_moirai.optimize(lambda trial:objective_moirai_moe_global(trial,X_train,y_train,splitter,device=device,pred_len=30,model_size='small',freq='D',use_full_train=True,oof_storage=oof_moirai),n_trials=n_trials_moirai,n_jobs=1);best_params_moirai=study_moirai.best_params;st.json(best_params_moirai);st.write(f"Mejor MAE CV Moirai: {study_moirai.best_value:.4f}")
-  st.subheader("Fase 2: Entrenamiento Final y Prediccion en Test Set (10%)");st.write(f"Tamaño Test Set: {len(X_test)} muestras")
-  st.write("Entrenando LightGBM final y prediciendo en test...")
-  with st.spinner('LightGBM -> Test'): preds_lgb_test,model_lgb=lgb_predict_test(X_train,y_train,X_test,best_params_lgb);mae_lgb_test=mean_absolute_error(y_test,preds_lgb_test);st.write(f"MAE LightGBM en Test: {mae_lgb_test:.4f}")
-  st.write("Entrenando CatBoost final y prediciendo en test...")
-  with st.spinner('CatBoost -> Test'): preds_cb_test,model_cb=cb_predict_test(X_train,y_train,X_test,best_params_cb);mae_cb_test=mean_absolute_error(y_test,preds_cb_test);st.write(f"MAE CatBoost en Test: {mae_cb_test:.4f}")
-  st.write("Entrenando TimeXer final y prediciendo en test...")
-  with st.spinner('TimeXer -> Test'):
-   preds_tx_test,tx_test_indices,model_tx=tx_predict_test(X_train,y_train,X_test,y_test,best_params_tx,device,seq_len=96,pred_len=1,features='MS')
-   if len(preds_tx_test)<len(y_test): missing=len(y_test)-len(preds_tx_test);preds_tx_test_full=np.full(len(y_test),np.nan);preds_tx_test_full[missing:]=preds_tx_test;preds_tx_test=preds_tx_test_full
-   valid_tx_mask=~np.isnan(preds_tx_test)
-   if valid_tx_mask.any(): mae_tx_test=mean_absolute_error(y_test[valid_tx_mask],preds_tx_test[valid_tx_mask]);st.write(f"MAE TimeXer en Test: {mae_tx_test:.4f}")
-   else: st.warning("TimeXer no produjo predicciones válidas")
-  st.write("Entrenando Moirai-MoE final y prediciendo en test...")
-  with st.spinner('Moirai-MoE -> Test'):
-   preds_moirai_test,moirai_test_indices=moirai_predict_test(y_train,y_test,best_params_moirai,model_size='small',freq='D')
-   if len(preds_moirai_test)<len(y_test): missing=len(y_test)-len(preds_moirai_test);preds_moirai_test_full=np.full(len(y_test),np.nan);preds_moirai_test_full[missing:]=preds_moirai_test;preds_moirai_test=preds_moirai_test_full
-   valid_moirai_mask=~np.isnan(preds_moirai_test)
-   if valid_moirai_mask.any(): mae_moirai_test=mean_absolute_error(y_test[valid_moirai_mask],preds_moirai_test[valid_moirai_mask]);st.write(f"MAE Moirai-MoE en Test: {mae_moirai_test:.4f}")
-   else: st.warning("Moirai no produjo predicciones válidas")
-  st.subheader("Fase 3: Matriz de Predicciones Test");test_df=pd.DataFrame({'idx':range(len(y_test)),'lgb':preds_lgb_test,'catboost':preds_cb_test,'timexer':preds_tx_test,'moirai':preds_moirai_test,'target':y_test.values});test_df_clean=test_df.dropna().reset_index(drop=True);st.write(f"Matriz Test shape: {test_df_clean.shape}");st.dataframe(test_df_clean.head(30),use_container_width=True);st.subheader("Predicciones en Escala Normalizada (Log Return [0,1])");norm_df=pd.DataFrame({'Indice':range(len(y_test)),'Real':y_test.values,'LGB':preds_lgb_test,'CatBoost':preds_cb_test,'TimeXer':preds_tx_test,'Moirai':preds_moirai_test});model_colors={'LGB':COLORS['primary'],'CatBoost':COLORS['success'],'TimeXer':COLORS['purple'],'Moirai':COLORS['orange']};model_names_display={'LGB':'LightGBM','CatBoost':'CatBoost','TimeXer':'TimeXer','Moirai':'Moirai-MoE'};fig_norm=go.Figure();fig_norm.add_trace(go.Scatter(x=norm_df['Indice'],y=norm_df['Real'],mode='lines',name='Valor Real',line=dict(color=COLORS['black'],width=3)))
-  for col in ['LGB','CatBoost','TimeXer','Moirai']:
-   valid_mask=~np.isnan(norm_df[col])
-   if valid_mask.any(): fig_norm.add_trace(go.Scatter(x=norm_df.loc[valid_mask,'Indice'],y=norm_df.loc[valid_mask,col],mode='lines',name=model_names_display[col],line=dict(color=model_colors[col],width=2),opacity=0.8))
-  fig_norm.update_layout(**get_professional_layout(title=f'Predicciones Test Set - Escala Normalizada [0,1] - {token}',xaxis_title='Índice en Test Set',yaxis_title='Log Return Normalizado',height=550));st.plotly_chart(fig_norm,use_container_width=True);st.subheader("Métricas en Escala Normalizada [0,1]");metricas_norm=[]
-  metricas_norm.append({'Modelo':'LightGBM','MSE':mean_squared_error(y_test,preds_lgb_test),'RMSE':np.sqrt(mean_squared_error(y_test,preds_lgb_test)),'MAE':mean_absolute_error(y_test,preds_lgb_test),'R2':r2_score(y_test,preds_lgb_test)})
-  metricas_norm.append({'Modelo':'CatBoost','MSE':mean_squared_error(y_test,preds_cb_test),'RMSE':np.sqrt(mean_squared_error(y_test,preds_cb_test)),'MAE':mean_absolute_error(y_test,preds_cb_test),'R2':r2_score(y_test,preds_cb_test)})
-  valid_tx=~np.isnan(preds_tx_test)
-  if valid_tx.any(): metricas_norm.append({'Modelo':'TimeXer','MSE':mean_squared_error(y_test[valid_tx],preds_tx_test[valid_tx]),'RMSE':np.sqrt(mean_squared_error(y_test[valid_tx],preds_tx_test[valid_tx])),'MAE':mean_absolute_error(y_test[valid_tx],preds_tx_test[valid_tx]),'R2':r2_score(y_test[valid_tx],preds_tx_test[valid_tx])})
-  valid_moirai=~np.isnan(preds_moirai_test)
-  if valid_moirai.any(): metricas_norm.append({'Modelo':'Moirai-MoE','MSE':mean_squared_error(y_test[valid_moirai],preds_moirai_test[valid_moirai]),'RMSE':np.sqrt(mean_squared_error(y_test[valid_moirai],preds_moirai_test[valid_moirai])),'MAE':mean_absolute_error(y_test[valid_moirai],preds_moirai_test[valid_moirai]),'R2':r2_score(y_test[valid_moirai],preds_moirai_test[valid_moirai])})
-  metricas_norm_df=pd.DataFrame(metricas_norm).round(6).sort_values('MAE').reset_index(drop=True);st.dataframe(metricas_norm_df,use_container_width=True);st.subheader("Predicciones en Escala Log Return Original");y_test_log=scaler_target.inverse_transform(y_test.values.reshape(-1,1)).flatten();preds_lgb_log=scaler_target.inverse_transform(preds_lgb_test.reshape(-1,1)).flatten();preds_cb_log=scaler_target.inverse_transform(preds_cb_test.reshape(-1,1)).flatten();preds_tx_log=np.full_like(preds_tx_test,np.nan);valid_tx=~np.isnan(preds_tx_test)
-  if valid_tx.any(): preds_tx_log[valid_tx]=scaler_target.inverse_transform(preds_tx_test[valid_tx].reshape(-1,1)).flatten()
-  preds_moirai_log=np.full_like(preds_moirai_test,np.nan);valid_moirai=~np.isnan(preds_moirai_test)
-  if valid_moirai.any(): preds_moirai_log[valid_moirai]=scaler_target.inverse_transform(preds_moirai_test[valid_moirai].reshape(-1,1)).flatten()
-  log_df=pd.DataFrame({'Indice':range(len(y_test)),'Real':y_test_log,'LGB':preds_lgb_log,'CatBoost':preds_cb_log,'TimeXer':preds_tx_log,'Moirai':preds_moirai_log});fig_log=go.Figure();fig_log.add_hline(y=0,line_dash="solid",line_color=COLORS['gray'],line_width=1.5);fig_log.add_trace(go.Scatter(x=log_df['Indice'],y=log_df['Real'],mode='lines',name='Log Return Real',line=dict(color=COLORS['black'],width=3)))
-  for col in ['LGB','CatBoost','TimeXer','Moirai']:
-   valid_mask=~np.isnan(log_df[col])
-   if valid_mask.any(): fig_log.add_trace(go.Scatter(x=log_df.loc[valid_mask,'Indice'],y=log_df.loc[valid_mask,col],mode='lines',name=model_names_display[col],line=dict(color=model_colors[col],width=2),opacity=0.8))
-  fig_log.update_layout(**get_professional_layout(title=f'Predicciones Test Set - Log Return Original - {token}',xaxis_title='Índice en Test Set',yaxis_title='Log Return',height=550));st.plotly_chart(fig_log,use_container_width=True);st.subheader("Métricas en Escala Log Return Original");metricas_log=[]
-  metricas_log.append({'Modelo':'LightGBM','MSE':mean_squared_error(y_test_log,preds_lgb_log),'RMSE':np.sqrt(mean_squared_error(y_test_log,preds_lgb_log)),'MAE':mean_absolute_error(y_test_log,preds_lgb_log),'R2':r2_score(y_test_log,preds_lgb_log)})
-  metricas_log.append({'Modelo':'CatBoost','MSE':mean_squared_error(y_test_log,preds_cb_log),'RMSE':np.sqrt(mean_squared_error(y_test_log,preds_cb_log)),'MAE':mean_absolute_error(y_test_log,preds_cb_log),'R2':r2_score(y_test_log,preds_cb_log)})
-  valid_tx=~np.isnan(preds_tx_log)
-  if valid_tx.any(): metricas_log.append({'Modelo':'TimeXer','MSE':mean_squared_error(y_test_log[valid_tx],preds_tx_log[valid_tx]),'RMSE':np.sqrt(mean_squared_error(y_test_log[valid_tx],preds_tx_log[valid_tx])),'MAE':mean_absolute_error(y_test_log[valid_tx],preds_tx_log[valid_tx]),'R2':r2_score(y_test_log[valid_tx],preds_tx_log[valid_tx])})
-  valid_moirai=~np.isnan(preds_moirai_log)
-  if valid_moirai.any(): metricas_log.append({'Modelo':'Moirai-MoE','MSE':mean_squared_error(y_test_log[valid_moirai],preds_moirai_log[valid_moirai]),'RMSE':np.sqrt(mean_squared_error(y_test_log[valid_moirai],preds_moirai_log[valid_moirai])),'MAE':mean_absolute_error(y_test_log[valid_moirai],preds_moirai_log[valid_moirai]),'R2':r2_score(y_test_log[valid_moirai],preds_moirai_log[valid_moirai])})
-  metricas_log_df=pd.DataFrame(metricas_log).round(6).sort_values('MAE').reset_index(drop=True);st.dataframe(metricas_log_df,use_container_width=True);st.subheader("Predicciones en Escala de Precio (USD)");close_prices=df['Close'].values;test_start_idx=train_size;precio_real,precio_lgb,precio_cb,precio_tx,precio_moirai=[],[],[],[],[];indices_precio=[]
-  for i in range(len(y_test)):
-   global_idx=test_start_idx+i
-   if global_idx>0 and global_idx<len(close_prices):
-    precio_anterior=close_prices[global_idx-1];precio_real.append(precio_anterior*np.exp(y_test_log[i]));precio_lgb.append(precio_anterior*np.exp(preds_lgb_log[i]));precio_cb.append(precio_anterior*np.exp(preds_cb_log[i]));precio_tx.append(precio_anterior*np.exp(preds_tx_log[i]) if not np.isnan(preds_tx_log[i]) else np.nan);precio_moirai.append(precio_anterior*np.exp(preds_moirai_log[i]) if not np.isnan(preds_moirai_log[i]) else np.nan);indices_precio.append(global_idx)
-  precio_df=pd.DataFrame({'Indice':indices_precio,'Precio_Real':precio_real,'LGB':precio_lgb,'CatBoost':precio_cb,'TimeXer':precio_tx,'Moirai':precio_moirai});fig_precio=go.Figure();fig_precio.add_trace(go.Scatter(x=precio_df['Indice'],y=precio_df['Precio_Real'],mode='lines',name='Precio Real',line=dict(color=COLORS['black'],width=3)))
-  for col in ['LGB','CatBoost','TimeXer','Moirai']:
-   valid=~precio_df[col].isna()
-   if valid.any(): fig_precio.add_trace(go.Scatter(x=precio_df.loc[valid,'Indice'],y=precio_df.loc[valid,col],mode='lines',name=model_names_display[col],line=dict(color=model_colors[col],width=2)))
-  fig_precio.update_layout(**get_professional_layout(title=f'Predicciones Test Set - Precio USD - {token}',xaxis_title='Índice Temporal',yaxis_title='Precio (USD)',height=600));st.plotly_chart(fig_precio,use_container_width=True);st.subheader("Métricas en Escala de Precio (USD)");precio_real_arr=np.array(precio_real);precio_lgb_arr=np.array(precio_lgb);precio_cb_arr=np.array(precio_cb);precio_tx_arr=np.array(precio_tx);precio_moirai_arr=np.array(precio_moirai);metricas_precio=[]
-  metricas_precio.append({'Modelo':'LightGBM','MSE':mean_squared_error(precio_real_arr,precio_lgb_arr),'RMSE':np.sqrt(mean_squared_error(precio_real_arr,precio_lgb_arr)),'MAE':mean_absolute_error(precio_real_arr,precio_lgb_arr),'R2':r2_score(precio_real_arr,precio_lgb_arr)})
-  metricas_precio.append({'Modelo':'CatBoost','MSE':mean_squared_error(precio_real_arr,precio_cb_arr),'RMSE':np.sqrt(mean_squared_error(precio_real_arr,precio_cb_arr)),'MAE':mean_absolute_error(precio_real_arr,precio_cb_arr),'R2':r2_score(precio_real_arr,precio_cb_arr)})
-  valid_tx_precio=~np.isnan(precio_tx_arr)
-  if valid_tx_precio.any(): metricas_precio.append({'Modelo':'TimeXer','MSE':mean_squared_error(precio_real_arr[valid_tx_precio],precio_tx_arr[valid_tx_precio]),'RMSE':np.sqrt(mean_squared_error(precio_real_arr[valid_tx_precio],precio_tx_arr[valid_tx_precio])),'MAE':mean_absolute_error(precio_real_arr[valid_tx_precio],precio_tx_arr[valid_tx_precio]),'R2':r2_score(precio_real_arr[valid_tx_precio],precio_tx_arr[valid_tx_precio])})
-  valid_moirai_precio=~np.isnan(precio_moirai_arr)
-  if valid_moirai_precio.any(): metricas_precio.append({'Modelo':'Moirai-MoE','MSE':mean_squared_error(precio_real_arr[valid_moirai_precio],precio_moirai_arr[valid_moirai_precio]),'RMSE':np.sqrt(mean_squared_error(precio_real_arr[valid_moirai_precio],precio_moirai_arr[valid_moirai_precio])),'MAE':mean_absolute_error(precio_real_arr[valid_moirai_precio],precio_moirai_arr[valid_moirai_precio]),'R2':r2_score(precio_real_arr[valid_moirai_precio],precio_moirai_arr[valid_moirai_precio])})
-  metricas_precio_df=pd.DataFrame(metricas_precio).round(4).sort_values('MAE').reset_index(drop=True);st.dataframe(metricas_precio_df,use_container_width=True);st.subheader("Comparación: 3 Escalas de Visualización");fig_comparison=make_subplots(rows=3,cols=1,shared_xaxes=False,vertical_spacing=0.08,subplot_titles=['<b>Escala Normalizada [0,1]</b>','<b>Log Return Original</b>','<b>Precio (USD)</b>']);fig_comparison.add_trace(go.Scatter(x=norm_df['Indice'],y=norm_df['Real'],mode='lines',name='Real',line=dict(color=COLORS['black'],width=2),showlegend=True),row=1,col=1)
-  for col,color in [('LGB',COLORS['primary']),('CatBoost',COLORS['success']),('TimeXer',COLORS['purple']),('Moirai',COLORS['orange'])]:
-   valid=~np.isnan(norm_df[col])
-   if valid.any(): fig_comparison.add_trace(go.Scatter(x=norm_df.loc[valid,'Indice'],y=norm_df.loc[valid,col],mode='lines',name=model_names_display[col],line=dict(color=color,width=1.5),showlegend=True),row=1,col=1)
-  fig_comparison.add_trace(go.Scatter(x=log_df['Indice'],y=log_df['Real'],mode='lines',name='Real',line=dict(color=COLORS['black'],width=2),showlegend=False),row=2,col=1)
-  for col,color in [('LGB',COLORS['primary']),('CatBoost',COLORS['success']),('TimeXer',COLORS['purple']),('Moirai',COLORS['orange'])]:
-   valid=~np.isnan(log_df[col])
-   if valid.any(): fig_comparison.add_trace(go.Scatter(x=log_df.loc[valid,'Indice'],y=log_df.loc[valid,col],mode='lines',name=model_names_display[col],line=dict(color=color,width=1.5),showlegend=False),row=2,col=1)
-  fig_comparison.add_trace(go.Scatter(x=precio_df['Indice'],y=precio_df['Precio_Real'],mode='lines',name='Real',line=dict(color=COLORS['black'],width=2),showlegend=False),row=3,col=1)
-  for col,color in [('LGB',COLORS['primary']),('CatBoost',COLORS['success']),('TimeXer',COLORS['purple']),('Moirai',COLORS['orange'])]:
-   valid=~precio_df[col].isna()
-   if valid.any(): fig_comparison.add_trace(go.Scatter(x=precio_df.loc[valid,'Indice'],y=precio_df.loc[valid,col],mode='lines',name=model_names_display[col],line=dict(color=color,width=1.5),showlegend=False),row=3,col=1)
-  fig_comparison.update_layout(height=900,template='plotly_white',plot_bgcolor=BG_COLOR,paper_bgcolor=BG_COLOR,title=dict(text=f'<b>Comparación de Escalas - Test Set - {token}</b>',x=0.5,xanchor='center',font=dict(size=FONT_SIZES['title'],family=FONT_FAMILY,color=COLORS['black'])),showlegend=True,legend=dict(orientation='h',yanchor='bottom',y=1.02,xanchor='center',x=0.5,font=dict(size=FONT_SIZES['legend'],family=FONT_FAMILY)));fig_comparison.update_yaxes(title_text='Normalizado',row=1,col=1);fig_comparison.update_yaxes(title_text='Log Return',row=2,col=1);fig_comparison.update_yaxes(title_text='Precio (USD)',row=3,col=1);fig_comparison.update_xaxes(title_text='Índice',row=3,col=1)
-  for annotation in fig_comparison['layout']['annotations']: annotation['font']=dict(size=FONT_SIZES['subtitle'],family=FONT_FAMILY,color=COLORS['black'])
-  st.plotly_chart(fig_comparison,use_container_width=True);st.subheader("Resumen: Métricas por Escala");col1,col2,col3=st.columns(3)
-  with col1: st.write("**Escala Normalizada [0,1]**");st.dataframe(metricas_norm_df,use_container_width=True)
-  with col2: st.write("**Log Return Original**");st.dataframe(metricas_log_df,use_container_width=True)
-  with col3: st.write("**Precio (USD)**");st.dataframe(metricas_precio_df,use_container_width=True)
-  st.subheader("Comparación Visual de Métricas");fig_metricas=make_subplots(rows=2,cols=2,subplot_titles=['<b>MSE por Modelo</b>','<b>RMSE por Modelo</b>','<b>MAE por Modelo</b>','<b>R² por Modelo</b>'],vertical_spacing=0.18,horizontal_spacing=0.12);n_models=len(metricas_precio_df)
-  for i,(metric,color) in enumerate(zip(['MSE','RMSE','MAE','R2'],[COLORS['primary'],COLORS['success'],COLORS['orange'],COLORS['purple']])): fig_metricas.add_trace(go.Bar(x=metricas_precio_df['Modelo'],y=metricas_precio_df[metric],marker=dict(color=[color]*n_models,line=dict(color='rgba(0,0,0,0.4)',width=1.5)),text=metricas_precio_df[metric].round(2 if metric!='R2' else 3),textposition='outside',textfont=dict(size=FONT_SIZES['annotation'],family=FONT_FAMILY),showlegend=False),row=(i//2)+1,col=(i%2)+1)
-  fig_metricas.update_layout(template='plotly_white',plot_bgcolor=BG_COLOR,paper_bgcolor=BG_COLOR,title=dict(text='<b>Comparación de Métricas entre Modelos (Escala Precio)</b>',x=0.5,xanchor='center',font=dict(size=FONT_SIZES['title'],family=FONT_FAMILY,color=COLORS['black'])),height=750,margin=dict(l=60,r=60,t=120,b=60))
-  for annotation in fig_metricas['layout']['annotations']: annotation['font']=dict(size=FONT_SIZES['subtitle'],family=FONT_FAMILY,color=COLORS['black'])
-  for i in range(1,3):
-   for j in range(1,3): fig_metricas.update_xaxes(tickangle=30,tickfont=dict(size=FONT_SIZES['tick'],family=FONT_FAMILY),row=i,col=j);fig_metricas.update_yaxes(tickfont=dict(size=FONT_SIZES['tick'],family=FONT_FAMILY),showgrid=True,gridcolor='rgba(128,128,128,0.15)',row=i,col=j)
-  st.plotly_chart(fig_metricas,use_container_width=True);mejor_modelo,mejor_mae,mejor_r2=metricas_precio_df.iloc[0]['Modelo'],metricas_precio_df.iloc[0]['MAE'],metricas_precio_df.iloc[0]['R2'];st.success(f"**Mejor modelo por MAE:** {mejor_modelo} (MAE = {mejor_mae:.4f}, R² = {mejor_r2:.4f})");st.session_state['norm_df']=norm_df;st.session_state['log_df']=log_df;st.session_state['precio_df']=precio_df;st.session_state['close_prices']=close_prices;st.session_state['test_start_idx']=test_start_idx;st.session_state['metricas_norm_df']=metricas_norm_df;st.session_state['metricas_log_df']=metricas_log_df;st.session_state['metricas_precio_df']=metricas_precio_df;st.session_state['entrenamiento_completado']=True;st.session_state['token']=token;st.success("Entrenamiento y evaluación completados exitosamente")
-with tab6:
- st.header("Visualización Final: Precio de Cierre con Predicciones")
- if 'entrenamiento_completado' in st.session_state and st.session_state['entrenamiento_completado']:
-  precio_df=st.session_state['precio_df'];close_prices=st.session_state['close_prices'];test_start_idx=st.session_state['test_start_idx'];metricas_precio_df=st.session_state['metricas_precio_df'];token_saved=st.session_state.get('token',token);st.subheader(f"Precio de Cierre Completo - {token_saved}");fig_full=go.Figure();fig_full.add_trace(go.Scatter(x=list(range(len(close_prices))),y=close_prices,mode='lines',name='Precio de Cierre',line=dict(color=COLORS['black'],width=2.5)))
-  for col,color,name in [('LGB',COLORS['primary'],'LightGBM'),('CatBoost',COLORS['success'],'CatBoost'),('TimeXer',COLORS['purple'],'TimeXer'),('Moirai',COLORS['orange'],'Moirai-MoE')]:
-   if col in precio_df.columns:
-    valid=~precio_df[col].isna()
-    if valid.any(): fig_full.add_trace(go.Scatter(x=precio_df.loc[valid,'Indice'].tolist(),y=precio_df.loc[valid,col].tolist(),mode='lines',name=name,line=dict(color=color,width=2.5,dash='dot')))
-  min_idx,max_idx=precio_df['Indice'].min(),precio_df['Indice'].max();fig_full.add_vrect(x0=min_idx,x1=max_idx,fillcolor="rgba(128, 128, 128, 0.1)",layer="below",line_width=0);fig_full.update_layout(**get_professional_layout(title=f'Serie Completa de Precio con Predicciones - {token_saved}',xaxis_title='Índice Temporal',yaxis_title='Precio (USD)',height=600));st.plotly_chart(fig_full,use_container_width=True);st.subheader("Zoom: Solo Zona de Test (10%)");fig_zoom=go.Figure();zoom_start,zoom_end=max(0,int(min_idx)-50),min(len(close_prices),int(max_idx)+50);fig_zoom.add_trace(go.Scatter(x=list(range(zoom_start,zoom_end)),y=close_prices[zoom_start:zoom_end],mode='lines',name='Precio de Cierre',line=dict(color=COLORS['black'],width=3)))
-  for col,color,name in [('LGB',COLORS['primary'],'LightGBM'),('CatBoost',COLORS['success'],'CatBoost'),('TimeXer',COLORS['purple'],'TimeXer'),('Moirai',COLORS['orange'],'Moirai-MoE')]:
-   if col in precio_df.columns:
-    valid=~precio_df[col].isna()
-    if valid.any(): fig_zoom.add_trace(go.Scatter(x=precio_df.loc[valid,'Indice'].tolist(),y=precio_df.loc[valid,col].tolist(),mode='lines+markers',name=name,line=dict(color=color,width=2.5),marker=dict(size=5)))
-  fig_zoom.update_layout(**get_professional_layout(title='Detalle: Predicciones vs Precio Real',xaxis_title='Índice Temporal',yaxis_title='Precio (USD)',height=550));st.plotly_chart(fig_zoom,use_container_width=True);st.subheader("Comparación por Modelo Individual");modelos_disponibles=['LightGBM','CatBoost','TimeXer','Moirai-MoE'];cols_map={'LightGBM':'LGB','CatBoost':'CatBoost','TimeXer':'TimeXer','Moirai-MoE':'Moirai'}
-  for modelo in modelos_disponibles:
-   col_name=cols_map.get(modelo)
-   if col_name and col_name in precio_df.columns:
-    valid=~precio_df[col_name].isna()
-    if valid.any():
-     with st.expander(f"Ver {modelo}",expanded=False):
-      fig_ind=go.Figure();fig_ind.add_trace(go.Scatter(x=precio_df['Indice'].tolist(),y=precio_df['Precio_Real'].tolist(),mode='lines',name='Precio Real',line=dict(color=COLORS['black'],width=3)));fig_ind.add_trace(go.Scatter(x=precio_df.loc[valid,'Indice'].tolist(),y=precio_df.loc[valid,col_name].tolist(),mode='lines+markers',name=modelo,line=dict(color=model_colors[col_name],width=2.5),marker=dict(size=6)));metrica_modelo=metricas_precio_df[metricas_precio_df['Modelo']==modelo]
-      if metrica_modelo.empty: metrica_modelo=metricas_precio_df[metricas_precio_df['Modelo'].str.contains(col_name,case=False)]
-      titulo=f'{modelo} vs Precio Real | MAE: {metrica_modelo["MAE"].values[0]:.2f} | R²: {metrica_modelo["R2"].values[0]:.4f}' if not metrica_modelo.empty else f'{modelo} vs Precio Real'
-      fig_ind.update_layout(**get_professional_layout(title=titulo,xaxis_title='Índice Temporal',yaxis_title='Precio (USD)',height=450));st.plotly_chart(fig_ind,use_container_width=True)
-  st.subheader("Resumen Final de Métricas");col1,col2,col3=st.columns(3)
-  with col1: st.write("**Escala Normalizada [0,1]**");st.dataframe(st.session_state['metricas_norm_df'],use_container_width=True) if 'metricas_norm_df' in st.session_state else None
-  with col2: st.write("**Log Return Original**");st.dataframe(st.session_state['metricas_log_df'],use_container_width=True) if 'metricas_log_df' in st.session_state else None
-  with col3: st.write("**Precio (USD)**");st.dataframe(metricas_precio_df,use_container_width=True)
-  mejor=metricas_precio_df.iloc[0];st.success(f"**Mejor modelo:** {mejor['Modelo']} con MAE = {mejor['MAE']:.4f} USD y R² = {mejor['R2']:.4f}")
- else: st.info("Primero ejecuta el entrenamiento en la pestaña 'BaseModelsTrain' para ver las visualizaciones finales.");st.write("Una vez completado el entrenamiento, aquí podrás ver:");st.markdown("- Serie completa de precio de cierre con predicciones superpuestas\n- Zoom en la zona de predicciones (Test Set 10%)\n- Comparación individual por modelo\n- Resumen de métricas en las 3 escalas")
+import pandas as pd;import numpy as np;import optuna;import warnings;import os;import plotly.graph_objects as go;from plotly.subplots import make_subplots
+from data.yfinance_data import download_yf;from data.ccxt_data import download_cx;from features.macroeconomics import macroeconomicos
+from model.bases_models.ligthGBM_model import objective_global,train_final_and_predict_test as lgb_predict_test
+from model.bases_models.catboost_model import objective_catboost_global,train_final_and_predict_test as cb_predict_test
+from model.bases_models.timexer_model import objective_timexer_global,train_final_and_predict_test as tx_predict_test
+from model.bases_models.moraiMOE_model import objective_moirai_moe_global,preload_moirai_module,train_final_and_predict_test as moirai_predict_test
+from preprocessing.walk_forward import wfrw;from features.tecnical_indicators import TA;from features.top_n import top_k
+from sklearn.preprocessing import MinMaxScaler;import torch
+warnings.filterwarnings("ignore")
+try:
+    from numba import njit,prange;HAS_NUMBA=True
+except ImportError:HAS_NUMBA=False
+if HAS_NUMBA:
+    @njit(parallel=True,cache=True)
+    def _recon(yl,cp,n):
+        o=np.empty(n,dtype=np.float64)
+        for i in prange(n):o[i]=cp[i]*np.exp(yl[i])
+        return o
+else:
+    def _recon(yl,cp,n):return cp*np.exp(yl)
+def met(y,p):y,p=np.asarray(y,np.float64),np.asarray(p,np.float64);mse=np.mean((y-p)**2);mae=np.mean(np.abs(y-p));ss=np.sum((y-p)**2);st=np.sum((y-np.mean(y))**2);return {'MSE':round(mse,6),'RMSE':round(np.sqrt(mse),6),'MAE':round(mae,6),'R2':round(1-ss/st if st>0 else 0.,6)}
+MDL={'LGB':('#1f77b4','LightGBM'),'CB':('#2ca02c','CatBoost'),'TX':('#9467bd','TimeXer'),'MO':('#ff7f0e','Moirai-MoE')}
+# ===== CONFIG =====
+TOKEN='KO'
+N_LGB,N_CB,N_TX,N_MO=5000,5000,5000,5000
+START,END='2020-01-01','2025-12-31'
+# ==================
+print(f'[1/8] Descargando datos...');download_yf(['KO','AAPL','NVDA','JNJ','^GSPC','GC=F','CBOE'],START,END);download_cx(['BTC/USDT','ETH/USDT'],START,END)
+df=pd.read_csv(rf"C:\Users\hibra\Desktop\TT\data\tokens\{TOKEN}_2020-2025.csv");lc=np.log(df['Close']/df['Close'].shift(-1)).dropna();lc_n=(lc-lc.min())/(lc.max()-lc.min())
+figs=[]
+# 1. Close price
+fig=go.Figure();fig.add_trace(go.Scatter(y=df['Close'],mode='lines',name='Close',line=dict(color='#1f77b4',width=1.5)))
+fig.update_layout(title=f'Precio de Cierre - {TOKEN}',xaxis_title='Periodo',yaxis_title='USD',height=450);figs.append(fig)
+# 2. Log returns
+fig=go.Figure();fig.add_trace(go.Scatter(y=lc,mode='lines',name='Log Return',line=dict(color='#1f77b4',width=1)))
+fig.update_layout(title='Log Returns',xaxis_title='Periodo',yaxis_title='Log Return',height=450);figs.append(fig)
+# 3. Normalized returns
+fig=go.Figure();fig.add_trace(go.Scatter(y=lc_n,mode='lines',name='Normalizado',line=dict(color='#9467bd',width=1)))
+fig.update_layout(title='Retornos Normalizados [0,1]',xaxis_title='Periodo',yaxis_title='Normalizado',height=400);figs.append(fig)
+# Features
+print(f'[2/8] TA + Macro...');df_ta=TA(df);df_ma=macroeconomicos(df['Date_final'])
+# MIC
+print(f'[3/8] MIC...')
+df_ta_r=df_ta.reset_index(drop=True);df_ma_r=df_ma.reset_index(drop=True);lc_r=lc.reset_index(drop=True)
+df_f=pd.concat([df_ta_r,df_ma_r],axis=1).iloc[1:];ml=min(len(df_f),len(lc_r));df_f=df_f.iloc[:ml].reset_index(drop=True);lc_r=lc_r.iloc[:ml].reset_index(drop=True)
+drop=[c for c in df_f.columns if df_f[c].max()-df_f[c].min()<1e-8];df_f=df_f.drop(columns=drop).replace([np.inf,-np.inf],0.0);lc_r=lc_r.replace([np.inf,-np.inf],0.0)
+ts=int(len(df_f)*.9);Xtr,Xte=df_f.iloc[:ts].copy(),df_f.iloc[ts:].copy();ytr,yte=lc_r.iloc[:ts].copy(),lc_r.iloc[ts:].copy()
+sf=MinMaxScaler();Xtr_s=pd.DataFrame(sf.fit_transform(Xtr),columns=Xtr.columns,index=Xtr.index);Xte_s=pd.DataFrame(sf.transform(Xte),columns=Xte.columns,index=Xte.index)
+sct=MinMaxScaler();ytr_s=pd.Series(sct.fit_transform(ytr.values.reshape(-1,1)).flatten(),index=ytr.index,name='lc');yte_s=pd.Series(sct.transform(yte.values.reshape(-1,1)).flatten(),index=yte.index,name='lc')
+feats,mic_v=top_k(Xtr_s,ytr_s,15);di=pd.DataFrame(list(mic_v.items()),columns=['Feature','Score']).sort_values('Score',ascending=True)
+Xt,Xe=Xtr_s[feats].reset_index(drop=True),Xte_s[feats].reset_index(drop=True);yt,ye=ytr_s.reset_index(drop=True),yte_s.reset_index(drop=True)
+# 4. MIC bar
+fig=go.Figure(go.Bar(y=di['Feature'],x=di['Score'],orientation='h',marker_color='#1f77b4'))
+fig.update_layout(title=f'MIC Feature Importance (Top 15)',xaxis_title='MIC Score',height=500,margin=dict(l=200));figs.append(fig)
+# Walk Forward
+print(f'[4/8] Walk-Forward...')
+k=5;sp=wfrw(yt,k=k,fh_val=30)
+fig=make_subplots(k,1,shared_xaxes=True,vertical_spacing=.03,subplot_titles=[f'Fold {i+1}' for i in range(k)])
+for i,(ti,vi) in enumerate(wfrw(yt,k=k,fh_val=30).split(yt)):
+    fig.add_trace(go.Scatter(x=yt.index[ti].tolist(),y=yt.iloc[ti].tolist(),mode='lines',name='Train',line=dict(color='#1f77b4',width=1.5),showlegend=i==0),i+1,1)
+    fig.add_trace(go.Scatter(x=yt.index[vi].tolist(),y=yt.iloc[vi].tolist(),mode='lines',name='Val',line=dict(color='#ff7f0e',width=2),showlegend=i==0),i+1,1)
+fig.update_layout(title='Walk-Forward Cross-Validation (K=5)',height=800);figs.append(fig)
+# Training
+device=torch.device('cuda' if torch.cuda.is_available() else 'cpu');print(f'[5/8] Entrenando ({device})...')
+oof_l,oof_c,oof_t,oof_m={},{},{},{}
+print('  LGB...');sl=optuna.create_study(direction='minimize');sl.optimize(lambda t:objective_global(t,Xt,yt,sp,oof_storage=oof_l),n_trials=N_LGB,n_jobs=-1);bp_l=oof_l.get('params',sl.best_params)
+print('  CB...');sc_=optuna.create_study(direction='minimize');sc_.optimize(lambda t:objective_catboost_global(t,Xt,yt,sp,oof_storage=oof_c),n_trials=N_CB,n_jobs=-1);bp_c=oof_c.get('params',sc_.best_params)
+print('  TX...');st_=optuna.create_study(direction='minimize');st_.optimize(lambda t:objective_timexer_global(t,Xt,yt,sp,device=device,seq_len=96,pred_len=30,features='MS',oof_storage=oof_t),n_trials=N_TX,n_jobs=1);bp_t=st_.best_params
+print('  MO...');preload_moirai_module(model_size='small');sm=optuna.create_study(direction='minimize');sm.optimize(lambda t:objective_moirai_moe_global(t,Xt,yt,sp,device=device,pred_len=30,model_size='small',freq='D',use_full_train=True,oof_storage=oof_m),n_trials=N_MO,n_jobs=1);bp_m=sm.best_params
+# Predictions
+print(f'[6/8] Predicciones...')
+pl,_=lgb_predict_test(Xt,yt,Xe,bp_l);pc,_=cb_predict_test(Xt,yt,Xe,bp_c)
+pt,_,_=tx_predict_test(Xt,yt,Xe,ye,bp_t,device,seq_len=96,pred_len=1,features='MS')
+if len(pt)<len(ye):tmp=np.full(len(ye),np.nan);tmp[len(ye)-len(pt):]=pt;pt=tmp
+pm,_=moirai_predict_test(yt,ye,bp_m,model_size='small',freq='D')
+if len(pm)<len(ye):tmp=np.full(len(ye),np.nan);tmp[len(ye)-len(pm):]=pm;pm=tmp
+print(f'[7/8] Metricas...')
+yv=ye.values;n=len(yv);idx=np.arange(n);preds={'LGB':pl,'CB':pc,'TX':pt,'MO':pm}
+# Log return scale
+yt_log=sct.inverse_transform(yv.reshape(-1,1)).flatten()
+inv=lambda p:sct.inverse_transform(np.where(np.isnan(p),0,p).reshape(-1,1)).flatten()
+pl_l,pc_l=inv(pl),inv(pc)
+pt_l=np.full_like(pt,np.nan);vt=~np.isnan(pt)
+if vt.any():pt_l[vt]=sct.inverse_transform(pt[vt].reshape(-1,1)).flatten()
+pm_l=np.full_like(pm,np.nan);vm=~np.isnan(pm)
+if vm.any():pm_l[vm]=sct.inverse_transform(pm[vm].reshape(-1,1)).flatten()
+preds_l={'LGB':pl_l,'CB':pc_l,'TX':pt_l,'MO':pm_l}
+# Price scale
+cp=df['Close'].values;gi=np.arange(ts,ts+n);val=gi<len(cp);gi_v=gi[val];prev=cp[gi_v-1]
+pr_r=_recon(yt_log[val],prev,int(val.sum()));pr_l=_recon(pl_l[val],prev,int(val.sum()));pr_c=_recon(pc_l[val],prev,int(val.sum()))
+pr_t=np.where(~np.isnan(pt_l[val]),prev*np.exp(pt_l[val]),np.nan);pr_m=np.where(~np.isnan(pm_l[val]),prev*np.exp(pm_l[val]),np.nan)
+preds_p={'LGB':pr_l,'CB':pr_c,'TX':pr_t,'MO':pr_m}
+# helper
+def add_preds(fig,x,real,data,rl='Real'):
+    fig.add_trace(go.Scatter(x=x,y=real,mode='lines',name=rl,line=dict(color='black',width=2)))
+    for k,(c,nm) in MDL.items():
+        v=data[k];m=~np.isnan(v)
+        if m.any():fig.add_trace(go.Scatter(x=np.asarray(x)[m],y=v[m],mode='lines',name=nm,line=dict(color=c,width=1.5)))
+# 5. Predictions normalized
+fig=go.Figure();add_preds(fig,idx,yv,preds);fig.update_layout(title='Predicciones - Normalizado [0,1]',xaxis_title='Indice',yaxis_title='Normalizado',height=500);figs.append(fig)
+# 6. Predictions log return
+fig=go.Figure();add_preds(fig,idx,yt_log,preds_l);fig.update_layout(title='Predicciones - Log Return',xaxis_title='Indice',yaxis_title='Log Return',height=500);figs.append(fig)
+# 7. Predictions price
+fig=go.Figure();add_preds(fig,gi_v,pr_r,preds_p);fig.update_layout(title='Predicciones - Precio (USD)',xaxis_title='Indice',yaxis_title='USD',height=500);figs.append(fig)
+# 8. Full series + predictions overlay
+fig=go.Figure();fig.add_trace(go.Scatter(y=cp,mode='lines',name='Close',line=dict(color='#ccc',width=1)))
+for k,(c,nm) in MDL.items():
+    v=preds_p[k];m=~np.isnan(v)
+    if m.any():fig.add_trace(go.Scatter(x=gi_v[m],y=v[m],mode='lines',name=nm,line=dict(color=c,width=2,dash='dot')))
+fig.update_layout(title=f'Serie Completa + Predicciones - {TOKEN}',xaxis_title='Indice',yaxis_title='USD',height=500);figs.append(fig)
+# 9. Zoom test zone
+zs,ze=max(0,int(gi_v.min())-50),min(len(cp),int(gi_v.max())+50)
+fig=go.Figure();fig.add_trace(go.Scatter(x=list(range(zs,ze)),y=cp[zs:ze].tolist(),mode='lines',name='Close',line=dict(color='black',width=2)))
+for k,(c,nm) in MDL.items():
+    v=preds_p[k];m=~np.isnan(v)
+    if m.any():fig.add_trace(go.Scatter(x=gi_v[m].tolist(),y=v[m].tolist(),mode='lines+markers',name=nm,line=dict(color=c,width=1.5),marker=dict(size=3)))
+fig.update_layout(title='Zoom - Zona Test',xaxis_title='Indice',yaxis_title='USD',height=450);figs.append(fig)
+# 10-13. Individual per model
+for k,(c,nm) in MDL.items():
+    fig=go.Figure();fig.add_trace(go.Scatter(x=gi_v.tolist(),y=pr_r.tolist(),mode='lines',name='Real',line=dict(color='black',width=2)))
+    v=preds_p[k];m=~np.isnan(v)
+    if m.any():fig.add_trace(go.Scatter(x=gi_v[m].tolist(),y=v[m].tolist(),mode='lines+markers',name=nm,line=dict(color=c,width=2),marker=dict(size=3)))
+    fig.update_layout(title=f'{nm} vs Real (USD)',xaxis_title='Indice',yaxis_title='USD',height=400);figs.append(fig)
+# 14. Metrics bar
+mp=[];[(lambda y2,p2,nm:mp.append({'Modelo':nm,**met(y2,p2)}))(pr_r[~np.isnan(v)],v[~np.isnan(v)],MDL[k][1]) for k,v in preds_p.items() if (~np.isnan(v)).any()];mp.sort(key=lambda x:x['MAE'])
+fig=make_subplots(2,2,subplot_titles=['MSE','RMSE','MAE','R²'])
+cols=['#1f77b4','#2ca02c','#9467bd','#ff7f0e']
+for i,m_ in enumerate(['MSE','RMSE','MAE','R2']):
+    fig.add_trace(go.Bar(x=[x['Modelo'] for x in mp],y=[x[m_] for x in mp],marker_color=cols[:len(mp)],showlegend=False),i//2+1,i%2+1)
+fig.update_layout(title='Comparacion de Metricas (Precio USD)',height=600);figs.append(fig)
+# ===== HTML =====
+print(f'[8/8] Generando report.html...')
+html='<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Report</title><script src="https://cdn.plot.ly/plotly-latest.min.js"></script></head><body style="max-width:1000px;margin:0 auto;padding:20px;font-family:sans-serif">\n'
+html+=f'<h2 style="text-align:center">{TOKEN} - Reporte Ensemble</h2>\n'
+for i,fig in enumerate(figs):
+    html+=fig.to_html(full_html=False,include_plotlyjs=False)+'\n<hr>\n'
+html+='</body></html>'
+out=os.path.join(os.path.dirname(__file__),'report.html')
+with open(out,'w',encoding='utf-8') as f:f.write(html)
+print(f'Listo: {out}')
