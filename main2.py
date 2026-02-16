@@ -1,4 +1,5 @@
-import pandas as pd;import numpy as np;import optuna;import warnings;import os;import plotly.graph_objects as go;from plotly.subplots import make_subplots
+import pandas as pd;import numpy as np;import optuna;import warnings;import os;import matplotlib;matplotlib.use('Agg');import matplotlib.pyplot as plt;import seaborn as sns
+plt.style.use('ggplot');sns.set_palette('deep')
 from data.yfinance_data import download_yf;from data.ccxt_data import download_cx;from features.macroeconomics import macroeconomicos
 from model.bases_models.ligthGBM_model import objective_global,train_final_and_predict_test as lgb_predict_test
 from model.bases_models.catboost_model import objective_catboost_global,train_final_and_predict_test as cb_predict_test
@@ -22,21 +23,12 @@ def met(y,p):y,p=np.asarray(y,np.float64),np.asarray(p,np.float64);mse=np.mean((
 MDL={'LGB':('#1f77b4','LightGBM'),'CB':('#2ca02c','CatBoost'),'TX':('#9467bd','TimeXer'),'MO':('#ff7f0e','Moirai-MoE')}
 # ===== CONFIG =====
 TOKEN='KO'
-N_LGB,N_CB,N_TX,N_MO=5000,5000,5000,5000
+N_LGB,N_CB,N_TX,N_MO=5,5,5,5
 START,END='2020-01-01','2025-12-31'
 # ==================
 print(f'[1/8] Descargando datos...');download_yf(['KO','AAPL','NVDA','JNJ','^GSPC','GC=F','CBOE'],START,END);download_cx(['BTC/USDT','ETH/USDT'],START,END)
-df=pd.read_csv(rf"C:\Users\hibra\Desktop\TT\data\tokens\{TOKEN}_2020-2025.csv");lc=np.log(df['Close']/df['Close'].shift(-1)).dropna();lc_n=(lc-lc.min())/(lc.max()-lc.min())
-figs=[]
-# 1. Close price
-fig=go.Figure();fig.add_trace(go.Scatter(y=df['Close'],mode='lines',name='Close',line=dict(color='#1f77b4',width=1.5)))
-fig.update_layout(title=f'Precio de Cierre - {TOKEN}',xaxis_title='Periodo',yaxis_title='USD',height=450);figs.append(fig)
-# 2. Log returns
-fig=go.Figure();fig.add_trace(go.Scatter(y=lc,mode='lines',name='Log Return',line=dict(color='#1f77b4',width=1)))
-fig.update_layout(title='Log Returns',xaxis_title='Periodo',yaxis_title='Log Return',height=450);figs.append(fig)
-# 3. Normalized returns
-fig=go.Figure();fig.add_trace(go.Scatter(y=lc_n,mode='lines',name='Normalizado',line=dict(color='#9467bd',width=1)))
-fig.update_layout(title='Retornos Normalizados [0,1]',xaxis_title='Periodo',yaxis_title='Normalizado',height=400);figs.append(fig)
+df=pd.read_csv(os.path.join(os.path.dirname(__file__),'data','tokens',f'{TOKEN}_2020-2025.csv'));lc=np.log(df['Close']/df['Close'].shift(1)).dropna();lc_n=(lc-lc.min())/(lc.max()-lc.min())
+
 # Features
 print(f'[2/8] TA + Macro...');df_ta=TA(df);df_ma=macroeconomicos(df['Date_final'])
 # MIC
@@ -49,17 +41,11 @@ sf=MinMaxScaler();Xtr_s=pd.DataFrame(sf.fit_transform(Xtr),columns=Xtr.columns,i
 sct=MinMaxScaler();ytr_s=pd.Series(sct.fit_transform(ytr.values.reshape(-1,1)).flatten(),index=ytr.index,name='lc');yte_s=pd.Series(sct.transform(yte.values.reshape(-1,1)).flatten(),index=yte.index,name='lc')
 feats,mic_v=top_k(Xtr_s,ytr_s,15);di=pd.DataFrame(list(mic_v.items()),columns=['Feature','Score']).sort_values('Score',ascending=True)
 Xt,Xe=Xtr_s[feats].reset_index(drop=True),Xte_s[feats].reset_index(drop=True);yt,ye=ytr_s.reset_index(drop=True),yte_s.reset_index(drop=True)
-# 4. MIC bar
-fig=go.Figure(go.Bar(y=di['Feature'],x=di['Score'],orientation='h',marker_color='#1f77b4'))
-fig.update_layout(title=f'MIC Feature Importance (Top 15)',xaxis_title='MIC Score',height=500,margin=dict(l=200));figs.append(fig)
+
 # Walk Forward
 print(f'[4/8] Walk-Forward...')
 k=5;sp=wfrw(yt,k=k,fh_val=30)
-fig=make_subplots(k,1,shared_xaxes=True,vertical_spacing=.03,subplot_titles=[f'Fold {i+1}' for i in range(k)])
-for i,(ti,vi) in enumerate(wfrw(yt,k=k,fh_val=30).split(yt)):
-    fig.add_trace(go.Scatter(x=yt.index[ti].tolist(),y=yt.iloc[ti].tolist(),mode='lines',name='Train',line=dict(color='#1f77b4',width=1.5),showlegend=i==0),i+1,1)
-    fig.add_trace(go.Scatter(x=yt.index[vi].tolist(),y=yt.iloc[vi].tolist(),mode='lines',name='Val',line=dict(color='#ff7f0e',width=2),showlegend=i==0),i+1,1)
-fig.update_layout(title='Walk-Forward Cross-Validation (K=5)',height=800);figs.append(fig)
+
 # Training
 device=torch.device('cuda' if torch.cuda.is_available() else 'cpu');print(f'[5/8] Entrenando ({device})...')
 oof_l,oof_c,oof_t,oof_m={},{},{},{}
@@ -90,51 +76,66 @@ cp=df['Close'].values;gi=np.arange(ts,ts+n);val=gi<len(cp);gi_v=gi[val];prev=cp[
 pr_r=_recon(yt_log[val],prev,int(val.sum()));pr_l=_recon(pl_l[val],prev,int(val.sum()));pr_c=_recon(pc_l[val],prev,int(val.sum()))
 pr_t=np.where(~np.isnan(pt_l[val]),prev*np.exp(pt_l[val]),np.nan);pr_m=np.where(~np.isnan(pm_l[val]),prev*np.exp(pm_l[val]),np.nan)
 preds_p={'LGB':pr_l,'CB':pr_c,'TX':pr_t,'MO':pr_m}
-# helper
-def add_preds(fig,x,real,data,rl='Real'):
-    fig.add_trace(go.Scatter(x=x,y=real,mode='lines',name=rl,line=dict(color='black',width=2)))
-    for k,(c,nm) in MDL.items():
-        v=data[k];m=~np.isnan(v)
-        if m.any():fig.add_trace(go.Scatter(x=np.asarray(x)[m],y=v[m],mode='lines',name=nm,line=dict(color=c,width=1.5)))
-# 5. Predictions normalized
-fig=go.Figure();add_preds(fig,idx,yv,preds);fig.update_layout(title='Predicciones - Normalizado [0,1]',xaxis_title='Indice',yaxis_title='Normalizado',height=500);figs.append(fig)
-# 6. Predictions log return
-fig=go.Figure();add_preds(fig,idx,yt_log,preds_l);fig.update_layout(title='Predicciones - Log Return',xaxis_title='Indice',yaxis_title='Log Return',height=500);figs.append(fig)
-# 7. Predictions price
-fig=go.Figure();add_preds(fig,gi_v,pr_r,preds_p);fig.update_layout(title='Predicciones - Precio (USD)',xaxis_title='Indice',yaxis_title='USD',height=500);figs.append(fig)
-# 8. Full series + predictions overlay
-fig=go.Figure();fig.add_trace(go.Scatter(y=cp,mode='lines',name='Close',line=dict(color='#ccc',width=1)))
-for k,(c,nm) in MDL.items():
-    v=preds_p[k];m=~np.isnan(v)
-    if m.any():fig.add_trace(go.Scatter(x=gi_v[m],y=v[m],mode='lines',name=nm,line=dict(color=c,width=2,dash='dot')))
-fig.update_layout(title=f'Serie Completa + Predicciones - {TOKEN}',xaxis_title='Indice',yaxis_title='USD',height=500);figs.append(fig)
-# 9. Zoom test zone
+# ===== MATPLOTLIB REPORT =====
+print(f'[8/8] Generando report.png...')
+def _add_preds_ax(ax,x,real,data,rl='Real'):
+    ax.plot(x,real,color='black',linewidth=1.5,label=rl)
+    for km,(cl,nm) in MDL.items():
+        v=data[km];m=~np.isnan(v)
+        if m.any():ax.plot(np.asarray(x)[m],v[m],color=cl,linewidth=1.0,label=nm)
+    ax.legend(fontsize=5)
+mp=[];[(lambda y2,p2,nm:mp.append({'Modelo':nm,**met(y2,p2)}))(pr_r[~np.isnan(v)],v[~np.isnan(v)],MDL[km][1]) for km,v in preds_p.items() if (~np.isnan(v)).any()];mp.sort(key=lambda x:x['MAE'])
+fig,axes=plt.subplots(6,3,figsize=(26,34))
+fig.suptitle(f'{TOKEN} - Reporte Ensemble',fontsize=22,fontweight='bold',y=0.995)
+plt.subplots_adjust(hspace=0.35,wspace=0.3)
+# R0C0: Close price
+ax=axes[0,0];ax.plot(df['Close'].values,color='#1f77b4',lw=1);ax.set_title(f'Precio de Cierre - {TOKEN}',fontsize=10,fontweight='bold');ax.set_xlabel('Periodo',fontsize=8);ax.set_ylabel('USD',fontsize=8)
+# R0C1: Log returns
+ax=axes[0,1];ax.plot(lc.values,color='#1f77b4',lw=0.5);ax.set_title('Log Returns',fontsize=10,fontweight='bold');ax.set_xlabel('Periodo',fontsize=8);ax.set_ylabel('Log Return',fontsize=8)
+# R0C2: Normalized returns
+ax=axes[0,2];ax.plot(lc_n.values,color='#9467bd',lw=0.5);ax.set_title('Retornos Normalizados [0,1]',fontsize=10,fontweight='bold');ax.set_xlabel('Periodo',fontsize=8);ax.set_ylabel('Normalizado',fontsize=8)
+# R1C0: MIC bar
+ax=axes[1,0];ax.barh(di['Feature'],di['Score'],color='#1f77b4');ax.set_title('MIC Feature Importance (Top 15)',fontsize=10,fontweight='bold');ax.set_xlabel('MIC Score',fontsize=8);ax.tick_params(axis='y',labelsize=5)
+# R1C1: Walk-Forward
+ax=axes[1,1];fc=['#1f77b4','#ff7f0e','#2ca02c','#d62728','#9467bd']
+for fi,(ti,vi) in enumerate(sp.split(yt)):
+    ax.plot(yt.index[ti],yt.iloc[ti].values,color=fc[fi],lw=0.7,alpha=0.7)
+    ax.plot(yt.index[vi],yt.iloc[vi].values,color=fc[fi],lw=2,ls='--')
+ax.set_title('Walk-Forward CV (K=5)',fontsize=10,fontweight='bold')
+# R1C2: Predictions normalized
+ax=axes[1,2];_add_preds_ax(ax,idx,yv,preds);ax.set_title('Predicciones - Normalizado [0,1]',fontsize=10,fontweight='bold')
+# R2C0: Predictions log return
+ax=axes[2,0];_add_preds_ax(ax,idx,yt_log,preds_l);ax.set_title('Predicciones - Log Return',fontsize=10,fontweight='bold')
+# R2C1: Predictions price
+ax=axes[2,1];_add_preds_ax(ax,gi_v,pr_r,preds_p);ax.set_title('Predicciones - Precio (USD)',fontsize=10,fontweight='bold')
+# R2C2: Full series + overlay
+ax=axes[2,2];ax.plot(cp,color='#cccccc',lw=0.8,label='Close')
+for km,(cl,nm) in MDL.items():
+    v=preds_p[km];m=~np.isnan(v)
+    if m.any():ax.plot(gi_v[m],v[m],color=cl,lw=1.5,ls=':',label=nm)
+ax.set_title(f'Serie Completa + Predicciones - {TOKEN}',fontsize=10,fontweight='bold');ax.legend(fontsize=5)
+# R3C0: Zoom test
 zs,ze=max(0,int(gi_v.min())-50),min(len(cp),int(gi_v.max())+50)
-fig=go.Figure();fig.add_trace(go.Scatter(x=list(range(zs,ze)),y=cp[zs:ze].tolist(),mode='lines',name='Close',line=dict(color='black',width=2)))
-for k,(c,nm) in MDL.items():
-    v=preds_p[k];m=~np.isnan(v)
-    if m.any():fig.add_trace(go.Scatter(x=gi_v[m].tolist(),y=v[m].tolist(),mode='lines+markers',name=nm,line=dict(color=c,width=1.5),marker=dict(size=3)))
-fig.update_layout(title='Zoom - Zona Test',xaxis_title='Indice',yaxis_title='USD',height=450);figs.append(fig)
-# 10-13. Individual per model
-for k,(c,nm) in MDL.items():
-    fig=go.Figure();fig.add_trace(go.Scatter(x=gi_v.tolist(),y=pr_r.tolist(),mode='lines',name='Real',line=dict(color='black',width=2)))
-    v=preds_p[k];m=~np.isnan(v)
-    if m.any():fig.add_trace(go.Scatter(x=gi_v[m].tolist(),y=v[m].tolist(),mode='lines+markers',name=nm,line=dict(color=c,width=2),marker=dict(size=3)))
-    fig.update_layout(title=f'{nm} vs Real (USD)',xaxis_title='Indice',yaxis_title='USD',height=400);figs.append(fig)
-# 14. Metrics bar
-mp=[];[(lambda y2,p2,nm:mp.append({'Modelo':nm,**met(y2,p2)}))(pr_r[~np.isnan(v)],v[~np.isnan(v)],MDL[k][1]) for k,v in preds_p.items() if (~np.isnan(v)).any()];mp.sort(key=lambda x:x['MAE'])
-fig=make_subplots(2,2,subplot_titles=['MSE','RMSE','MAE','R²'])
-cols=['#1f77b4','#2ca02c','#9467bd','#ff7f0e']
-for i,m_ in enumerate(['MSE','RMSE','MAE','R2']):
-    fig.add_trace(go.Bar(x=[x['Modelo'] for x in mp],y=[x[m_] for x in mp],marker_color=cols[:len(mp)],showlegend=False),i//2+1,i%2+1)
-fig.update_layout(title='Comparacion de Metricas (Precio USD)',height=600);figs.append(fig)
-# ===== HTML =====
-print(f'[8/8] Generando report.html...')
-html='<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Report</title><script src="https://cdn.plot.ly/plotly-latest.min.js"></script></head><body style="max-width:1000px;margin:0 auto;padding:20px;font-family:sans-serif">\n'
-html+=f'<h2 style="text-align:center">{TOKEN} - Reporte Ensemble</h2>\n'
-for i,fig in enumerate(figs):
-    html+=fig.to_html(full_html=False,include_plotlyjs=False)+'\n<hr>\n'
-html+='</body></html>'
-out=os.path.join(os.path.dirname(__file__),'report.html')
-with open(out,'w',encoding='utf-8') as f:f.write(html)
-print(f'Listo: {out}')
+ax=axes[3,0];ax.plot(range(zs,ze),cp[zs:ze],color='black',lw=1.5,label='Close')
+for km,(cl,nm) in MDL.items():
+    v=preds_p[km];m=~np.isnan(v)
+    if m.any():ax.plot(gi_v[m],v[m],color=cl,lw=1,label=nm,marker='o',ms=2)
+ax.set_title('Zoom - Zona Test',fontsize=10,fontweight='bold');ax.legend(fontsize=5)
+# R3C1,R3C2,R4C0,R4C1: Individual models
+pos=[(3,1),(3,2),(4,0),(4,1)]
+for pi,km in enumerate(MDL):
+    cl,nm=MDL[km];r,c=pos[pi];ax=axes[r,c]
+    ax.plot(gi_v,pr_r,color='black',lw=1.5,label='Real')
+    v=preds_p[km];m=~np.isnan(v)
+    if m.any():ax.plot(gi_v[m],v[m],color=cl,lw=1.5,label=nm,marker='o',ms=2)
+    ax.set_title(f'{nm} vs Real (USD)',fontsize=10,fontweight='bold');ax.legend(fontsize=6)
+# R4C2,R5C0,R5C1,R5C2: Metrics
+mpos=[(4,2),(5,0),(5,1),(5,2)];mcols=['#1f77b4','#2ca02c','#9467bd','#ff7f0e']
+for mi,mn in enumerate(['MSE','RMSE','MAE','R2']):
+    r,c=mpos[mi];ax=axes[r,c]
+    ax.bar([x['Modelo'] for x in mp],[x[mn] for x in mp],color=mcols[:len(mp)])
+    ax.set_title('R²' if mn=='R2' else mn,fontsize=10,fontweight='bold');ax.tick_params(axis='x',labelsize=7,rotation=30)
+plt.tight_layout(rect=[0,0,1,0.98])
+out=os.path.join(os.path.dirname(__file__),'report.png')
+fig.savefig(out,dpi=200,bbox_inches='tight',facecolor='white')
+plt.close(fig);print(f'Listo: {out}')

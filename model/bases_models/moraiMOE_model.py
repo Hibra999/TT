@@ -108,11 +108,13 @@ def preload_moirai_module(model_size:str='large'):
 def train_final_and_predict_test(y_train, y_test, best_params, model_size='small', freq='D'):
     """
     Entrena Moirai con todo el train y predice en test punto por punto.
+    Predicción recursiva: usa predicciones propias (no y_test real) en el contexto.
     """
     y_train_arr = y_train.values if isinstance(y_train, pd.Series) else np.array(y_train)
     y_test_arr = y_test.values if isinstance(y_test, pd.Series) else np.array(y_test)
     
-    full_series = np.concatenate([y_train_arr, y_test_arr])
+    # Inicializar test con ceros para evitar data leakage
+    full_series = np.concatenate([y_train_arr, np.zeros(len(y_test_arr))])
     train_len = len(y_train_arr)
     
     ctx_len = best_params.get('context_length', 128)
@@ -153,6 +155,9 @@ def train_final_and_predict_test(y_train, y_test, best_params, model_size='small
                 pred = float(np.median(fc[0].samples))
                 predictions.append(pred)
                 test_indices.append(i)
+                
+                # Escribir predicción en full_series para que contextos futuros la usen
+                full_series[global_idx] = pred
         except:
             continue
     
