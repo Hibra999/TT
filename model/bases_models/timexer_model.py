@@ -246,13 +246,12 @@ def train_final_and_predict_test(X_train, y_train, X_test, y_test, best_params, 
     y_train_v = np.nan_to_num(y_train.values.astype(np.float32), nan=0.0, posinf=0.0, neginf=0.0).reshape(-1, 1)
     train_data = np.concatenate([X_train_v, y_train_v], axis=1)
     
-    # Preparar datos de test
+    # Preparar datos de test (features solamente, y=0 para evitar leakage)
     X_test_v = np.nan_to_num(X_test.values.astype(np.float32), nan=0.0, posinf=0.0, neginf=0.0)
-    y_test_v = np.nan_to_num(y_test.values.astype(np.float32), nan=0.0, posinf=0.0, neginf=0.0).reshape(-1, 1)
-    test_data = np.concatenate([X_test_v, y_test_v], axis=1)
+    test_data_noy = np.concatenate([X_test_v, np.zeros((len(X_test_v), 1), dtype=np.float32)], axis=1)
     
-    # Datos completos para predicción rolling
-    full_data = np.concatenate([train_data, test_data], axis=0)
+    # Datos completos para predicción rolling (test y inicializado a 0)
+    full_data = np.concatenate([train_data, test_data_noy], axis=0)
     train_len = len(train_data)
     
     # Crear config con mejores params
@@ -333,13 +332,13 @@ def train_final_and_predict_test(X_train, y_train, X_test, y_test, best_params, 
                 if pat_cnt >= patience_val:
                     break
     
-    # Predecir en test
+    # Predecir en test (recursivo: usar predicciones propias, no y_test real)
     model.eval()
     predictions = []
     test_indices = []
     
     with torch.no_grad():
-        for i in range(len(test_data)):
+        for i in range(len(X_test_v)):
             global_idx = train_len + i
             window_start = global_idx - seq_len
             window_end = global_idx
@@ -353,5 +352,8 @@ def train_final_and_predict_test(X_train, y_train, X_test, y_test, best_params, 
             pred = float(out[0, 0].cpu().numpy())
             predictions.append(pred)
             test_indices.append(i)
+            
+            # Escribir predicción en full_data para que ventanas futuras la usen
+            full_data[global_idx, -1] = pred
     
     return np.array(predictions), np.array(test_indices), model

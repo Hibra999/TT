@@ -1,0 +1,741 @@
+\documentclass[12pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[spanish]{babel}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{geometry}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{float}
+\usepackage{tikz}
+\usetikzlibrary{shapes,arrows.meta,positioning}
+
+\geometry{margin=2.5cm}
+\hypersetup{colorlinks=true,linkcolor=blue,citecolor=blue,urlcolor=blue}
+
+\definecolor{critical}{RGB}{204,0,0}
+\definecolor{warning}{RGB}{204,153,0}
+\definecolor{info}{RGB}{0,102,204}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  keywordstyle=\color{blue},
+  commentstyle=\color{gray},
+  breaklines=true,
+  frame=single,
+  language=Python
+}
+
+\title{\textbf{Documentaci\'on T\'ecnica Completa: Pipeline de Predicci\'on Financiera con Ensemble de Modelos} \\[0.5em]
+\large An\'alisis Paso a Paso, Formulaci\'on Matem\'atica e Inconsistencias Detectadas}
+\author{Generado autom\'aticamente}
+\date{Febrero 2026}
+
+\begin{document}
+\maketitle
+\tableofcontents
+\newpage
+
+% ============================================================
+\section{Visi\'on General del Pipeline}
+% ============================================================
+
+Este proyecto implementa un pipeline de predicci\'on de precios financieros que:
+\begin{enumerate}
+    \item Descarga datos hist\'oricos de precios (acciones v\'ia \texttt{yfinance}, criptomonedas v\'ia \texttt{ccxt}).
+    \item Calcula \textbf{log-returns} y los normaliza a $[0,1]$.
+    \item Genera features: indicadores t\'ecnicos (TA-Lib) y macroecon\'omicos (FRED).
+    \item Selecciona los top-$k$ features por \textbf{MIC} (Maximal Information Coefficient).
+    \item Optimiza hiperpar\'ametros con \textbf{Optuna} usando \textbf{Walk-Forward Cross-Validation}.
+    \item Entrena 4 modelos base: \textbf{LightGBM}, \textbf{CatBoost}, \textbf{TimeXer} (Transformer), \textbf{Moirai-MoE} (Foundation Model).
+    \item Reconstruye predicciones a escala de log-return y de precio en USD.
+    \item Genera un reporte HTML con gr\'aficas Plotly.
+\end{enumerate}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    node distance=1.0cm,
+    box/.style={rectangle, draw, rounded corners, fill=blue!10, minimum width=4cm, minimum height=0.8cm, align=center, font=\small},
+    arrow/.style={-Stealth, thick}
+]
+\node[box] (data) {1. Descarga de Datos};
+\node[box, below=of data] (lr) {2. Log Returns $+$ Normalizaci\'on};
+\node[box, below=of lr] (feat) {3. Features: TA $+$ Macro};
+\node[box, below=of feat] (mic) {4. Selecci\'on MIC top-$k$};
+\node[box, below=of mic] (wf) {5. Walk-Forward CV};
+\node[box, below=of wf] (train) {6. Optuna $+$ Entrenamiento};
+\node[box, below=of train] (pred) {7. Predicci\'on $+$ Reconstrucci\'on};
+\node[box, below=of pred] (report) {8. Reporte HTML};
+
+\draw[arrow] (data) -- (lr);
+\draw[arrow] (lr) -- (feat);
+\draw[arrow] (feat) -- (mic);
+\draw[arrow] (mic) -- (wf);
+\draw[arrow] (wf) -- (train);
+\draw[arrow] (train) -- (pred);
+\draw[arrow] (pred) -- (report);
+\end{tikzpicture}
+\caption{Flujo general del pipeline.}
+\end{figure}
+
+\newpage
+% ============================================================
+\section{Paso 1: Descarga de Datos}
+% ============================================================
+
+\subsection{Acciones (yfinance)}
+Se descargan datos OHLCV diarios mediante \texttt{yfinance} para los tickers:
+\[
+\mathcal{T}_{\text{yf}} = \{\texttt{KO}, \texttt{AAPL}, \texttt{NVDA}, \texttt{JNJ}, \texttt{\^{}GSPC}, \texttt{GC=F}, \texttt{CBOE}\}
+\]
+Per\'iodo: $[2020\text{-}01\text{-}01, \; 2025\text{-}12\text{-}31]$. Cada ticker se almacena como CSV en \texttt{data/tokens/}.
+
+\subsection{Criptomonedas (CCXT/Binance)}
+Se descargan datos OHLCV diarios v\'ia la API de Binance para:
+\[
+\mathcal{T}_{\text{cx}} = \{\texttt{BTC/USDT}, \texttt{ETH/USDT}\}
+\]
+Se usa paginaci\'on con l\'imite de 1000 velas por solicitud.
+
+\subsection{Token Objetivo}
+El token objetivo es \texttt{KO} (Coca-Cola). Se lee su CSV:
+\[
+\text{df} = \texttt{pd.read\_csv}(\texttt{KO\_2020-2025.csv})
+\]
+
+% ============================================================
+\section{Paso 2: C\'alculo de Log-Returns y Normalizaci\'on}
+% ============================================================
+
+\subsection{Log-Returns}
+
+Se define el log-return como:
+\begin{equation}
+\boxed{r_t = \ln\!\left(\frac{C_t}{C_{t+1}}\right)}
+\label{eq:logret}
+\end{equation}
+donde $C_t$ es el precio de cierre en el instante $t$.
+
+\textcolor{critical}{\textbf{INCONSISTENCIA CR\'ITICA \#1 (Secci\'on~\ref{sec:issues}):}} La convenci\'on est\'andar de log-return es:
+\begin{equation}
+r_t^{\text{est\'andar}} = \ln\!\left(\frac{C_t}{C_{t-1}}\right)
+\label{eq:logret_std}
+\end{equation}
+En el c\'odigo se usa \texttt{shift(-1)} (shift hacia \emph{adelante}), lo que equivale a:
+\[
+r_t = \ln\!\left(\frac{C_t}{C_{t+1}}\right) = -\ln\!\left(\frac{C_{t+1}}{C_t}\right)
+\]
+Esto calcula el log-return \textbf{futuro con signo invertido}, introduciendo potencial \textbf{data leakage} ya que se usa informaci\'on del d\'ia $t+1$ para definir el target del d\'ia $t$.
+
+\subsection{Normalizaci\'on Min-Max Global}
+
+Se aplica normalizaci\'on Min-Max \textbf{global} (sobre toda la serie de log-returns):
+\begin{equation}
+\boxed{r_t^{\text{norm}} = \frac{r_t - r_{\min}}{r_{\max} - r_{\min}}}
+\label{eq:minmax_global}
+\end{equation}
+donde $r_{\min} = \min_i r_i$ y $r_{\max} = \max_i r_i$ se calculan sobre \textbf{toda la serie} (train $+$ test).
+
+\textcolor{critical}{\textbf{INCONSISTENCIA CR\'ITICA \#2:}} Esta normalizaci\'on se usa solo para visualizaci\'on pero puede confundir al lector. La normalizaci\'on que s\'i se aplica a los datos de entrenamiento/test se hace despu\'es con \texttt{MinMaxScaler} de scikit-learn de manera correcta (fit en train, transform en test).
+
+% ============================================================
+\section{Paso 3: Feature Engineering}
+% ============================================================
+
+\subsection{Indicadores T\'ecnicos (TA-Lib)}
+
+Para cada rezago $r \in \{30, 31, \ldots, 364\}$ (335 rezagos), se calculan los siguientes indicadores sobre el precio de cierre $C$, precio alto $H$, precio bajo $L$ y volumen $V$:
+
+\subsubsection{Indicadores de Tendencia}
+\begin{itemize}
+    \item \textbf{SMA} (Simple Moving Average):
+    \begin{equation}
+    \text{SMA}_r(t) = \frac{1}{r}\sum_{i=0}^{r-1} C_{t-i}
+    \end{equation}
+    
+    \item \textbf{EMA} (Exponential Moving Average):
+    \begin{equation}
+    \text{EMA}_r(t) = \alpha \cdot C_t + (1-\alpha) \cdot \text{EMA}_r(t-1), \quad \alpha = \frac{2}{r+1}
+    \end{equation}
+    
+    \item \textbf{TEMA} (Triple Exponential Moving Average):
+    \begin{equation}
+    \text{TEMA}_r = 3\,\text{EMA}_r - 3\,\text{EMA}(\text{EMA}_r) + \text{EMA}(\text{EMA}(\text{EMA}_r))
+    \end{equation}
+    
+    \item \textbf{WMA} (Weighted Moving Average):
+    \begin{equation}
+    \text{WMA}_r(t) = \frac{\sum_{i=0}^{r-1}(r-i) \cdot C_{t-i}}{\sum_{i=0}^{r-1}(r-i)}
+    \end{equation}
+\end{itemize}
+
+\subsubsection{Indicadores de Volatilidad}
+\begin{itemize}
+    \item \textbf{Bandas de Bollinger}:
+    \begin{align}
+    \text{middle}_r &= \text{SMA}_r \\
+    \text{upper}_r &= \text{SMA}_r + 2\,\sigma_r \\
+    \text{lower}_r &= \text{SMA}_r - 2\,\sigma_r
+    \end{align}
+    donde $\sigma_r$ es la desviaci\'on est\'andar m\'ovil de ventana $r$.
+    
+    \item \textbf{ATR} (Average True Range):
+    \begin{equation}
+    \text{TR}_t = \max\!\big(H_t - L_t,\; |H_t - C_{t-1}|,\; |L_t - C_{t-1}|\big)
+    \end{equation}
+    \begin{equation}
+    \text{ATR}_r(t) = \frac{1}{r}\sum_{i=0}^{r-1}\text{TR}_{t-i}
+    \end{equation}
+\end{itemize}
+
+\subsubsection{Indicadores de Momentum}
+\begin{itemize}
+    \item \textbf{MOM} (Momentum):
+    \begin{equation}
+    \text{MOM}_r(t) = C_t - C_{t-r}
+    \end{equation}
+    
+    \item \textbf{RSI} (Relative Strength Index):
+    \begin{equation}
+    \text{RSI}_r = 100 - \frac{100}{1 + \frac{\overline{\Delta^+_r}}{\overline{\Delta^-_r}}}
+    \end{equation}
+    donde $\overline{\Delta^+_r}$ y $\overline{\Delta^-_r}$ son las medias de los cambios positivos y negativos en ventana $r$.
+    
+    \item \textbf{StochRSI}:
+    \begin{equation}
+    \text{StochRSI}_r = \frac{\text{RSI}_r - \min(\text{RSI}_r)}{\max(\text{RSI}_r) - \min(\text{RSI}_r)}
+    \end{equation}
+    Con par\'ametros $\text{fastk}=5$ y $\text{fastd}=3$.
+    
+    \item \textbf{KAMA} (Kaufman Adaptive Moving Average):
+    Adapta su suavizado seg\'un la raz\'on se\~nal/ruido.
+\end{itemize}
+
+\subsubsection{Indicadores de Volumen}
+\begin{itemize}
+    \item \textbf{MFI} (Money Flow Index): RSI ponderado por volumen, ventana $r$.
+    \item \textbf{AD} (Accumulation/Distribution):
+    \begin{equation}
+    \text{AD}_t = \text{AD}_{t-1} + \frac{(C_t - L_t) - (H_t - C_t)}{H_t - L_t} \cdot V_t
+    \end{equation}
+    \item \textbf{ADOSC} (A/D Oscillator): $\text{EMA}_3(\text{AD}) - \text{EMA}_{10}(\text{AD})$
+    \item \textbf{OBV} (On-Balance Volume):
+    \begin{equation}
+    \text{OBV}_t = \text{OBV}_{t-1} + \text{sign}(C_t - C_{t-1}) \cdot V_t
+    \end{equation}
+\end{itemize}
+
+\textbf{Total de features TA}: $335 \times 12 + 3 = 4{,}023$ columnas (antes de filtrar constantes).
+
+\subsection{Features Macroecon\'omicos (FRED)}
+
+Se obtienen las siguientes series de la Reserva Federal (FRED) y se alinean por fecha:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{ll}
+\toprule
+\textbf{C\'odigo FRED} & \textbf{Descripci\'on} \\
+\midrule
+\texttt{GDP} & Producto Interno Bruto \\
+\texttt{CPIAUCSL} & \'Indice de Precios al Consumidor \\
+\texttt{FEDFUNDS} & Tasa de Fondos Federales \\
+\texttt{DGS10} & Tasa del Tesoro a 10 a\~nos \\
+\texttt{SOFR} & Secured Overnight Financing Rate \\
+\texttt{UNRATE} & Tasa de Desempleo \\
+\bottomrule
+\end{tabular}
+\caption{Variables macroecon\'omicas.}
+\end{table}
+
+Se aplica \texttt{ffill} (forward fill) para rellenar valores faltantes (frecuencia mensual/trimestral $\rightarrow$ diaria).
+
+% ============================================================
+\section{Paso 4: Preparaci\'on de Datos y Split Train/Test}
+% ============================================================
+
+\subsection{Concatenaci\'on y Limpieza}
+Se concatenan TA y Macro horizontalmente (por columnas). Se eliminan features constantes:
+\[
+\text{drop} = \{c \mid \max(c) - \min(c) < 10^{-8}\}
+\]
+Se reemplazan $\pm\infty$ por 0.
+
+\subsection{Split Temporal 90/10}
+\begin{equation}
+\boxed{t_s = \lfloor 0.9 \cdot N \rfloor}
+\end{equation}
+\begin{align}
+X_{\text{train}} &= X[0 : t_s], \quad y_{\text{train}} = r[0 : t_s] \\
+X_{\text{test}} &= X[t_s : N], \quad y_{\text{test}} = r[t_s : N]
+\end{align}
+
+\subsection{Normalizaci\'on MinMax (Correcta)}
+Se aplica \texttt{MinMaxScaler} de scikit-learn de forma correcta:
+
+\paragraph{Para features $X$:}
+\begin{equation}
+x_{ij}^{\text{scaled}} = \frac{x_{ij} - \min_{\text{train}}(x_j)}{\max_{\text{train}}(x_j) - \min_{\text{train}}(x_j)}
+\end{equation}
+\texttt{fit} solo en $X_{\text{train}}$, luego \texttt{transform} en ambos conjuntos.
+
+\paragraph{Para target $y$:}
+\begin{equation}
+y_i^{\text{scaled}} = \frac{y_i - \min_{\text{train}}(y)}{\max_{\text{train}}(y) - \min_{\text{train}}(y)}
+\end{equation}
+Mismo procedimiento: \texttt{fit} en $y_{\text{train}}$, \texttt{transform} en ambos.
+
+% ============================================================
+\section{Paso 5: Selecci\'on de Features por MIC}
+% ============================================================
+
+\subsection{Maximal Information Coefficient (MIC)}
+
+El MIC captura dependencias tanto lineales como no lineales entre dos variables. Su c\'alculo:
+
+\begin{enumerate}
+    \item Se rankean $x$ e $y$:
+    \begin{equation}
+    \tilde{x}_i = \frac{\text{rank}(x_i) - 1}{n - 1}, \quad \tilde{y}_i = \frac{\text{rank}(y_i) - 1}{n - 1}
+    \end{equation}
+    donde $\tilde{x}, \tilde{y} \in [0, 1]$.
+    
+    \item Para cada par de particiones $(n_x, n_y)$ con $n_x \cdot n_y \leq B = n^{0.6}$:
+    \begin{equation}
+    I(X; Y) = \frac{1}{n}\left(\sum_{i,j} n_{ij}\log n_{ij} - \sum_i n_{i\cdot}\log n_{i\cdot} - \sum_j n_{\cdot j}\log n_{\cdot j}\right) + \log n
+    \end{equation}
+    
+    \item Se normaliza la informaci\'on mutua:
+    \begin{equation}
+    M(n_x, n_y) = \frac{I(X; Y)}{\log\min(n_x, n_y)}
+    \end{equation}
+    
+    \item El MIC es:
+    \begin{equation}
+    \boxed{\text{MIC}(X, Y) = \max_{n_x \cdot n_y \leq B} M(n_x, n_y)}
+    \end{equation}
+\end{enumerate}
+
+Se seleccionan las top $k = 15$ features con mayor MIC respecto al target $y_{\text{train}}^{\text{scaled}}$.
+
+% ============================================================
+\section{Paso 6: Walk-Forward Cross-Validation}
+% ============================================================
+
+Se usa \texttt{SlidingWindowSplitter} de \texttt{sktime} con:
+\begin{itemize}
+    \item $k = 5$ folds
+    \item Horizonte de validaci\'on: $\text{fh} = 30$ pasos
+    \item Ventana de entrenamiento: $w = \lfloor 0.5 \cdot N_{\text{train}} \rfloor$
+    \item Paso entre folds:
+    \begin{equation}
+    \text{step} = \max\!\left(1, \left\lfloor\frac{N_{\text{train}} - w - \text{fh}}{k - 1}\right\rfloor\right)
+    \end{equation}
+\end{itemize}
+
+Cada fold $i$ genera:
+\[
+\text{Train}_i = [s_i, s_i + w), \quad \text{Val}_i = [s_i + w, s_i + w + \text{fh})
+\]
+donde $s_i = i \cdot \text{step}$.
+
+% ============================================================
+\section{Paso 7: Entrenamiento y Optimizaci\'on de Hiperpar\'ametros}
+% ============================================================
+
+Se usa \textbf{Optuna} (Tree-structured Parzen Estimator) para optimizar hiperpar\'ametros de cada modelo. El objetivo es minimizar el MAE medio sobre los folds de Walk-Forward:
+\begin{equation}
+\boxed{\theta^* = \arg\min_\theta \frac{1}{K}\sum_{i=1}^{K} \text{MAE}(y_{\text{val}}^{(i)}, \hat{y}_{\text{val}}^{(i)}(\theta))}
+\end{equation}
+
+\subsection{Modelo 1: LightGBM}
+
+Gradient Boosting basado en \'arboles con histogramas. Hiperpar\'ametros optimizados:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lll}
+\toprule
+\textbf{Par\'ametro} & \textbf{Rango} & \textbf{Tipo} \\
+\midrule
+\texttt{boosting\_type} & \{gbdt, dart, rf\} & Categ\'orico \\
+\texttt{num\_leaves} & $[31, 200]$ & Entero \\
+\texttt{max\_depth} & $[3, 12]$ & Entero \\
+\texttt{learning\_rate} & $[0.01, 0.3]$ (log) & Flotante \\
+\texttt{n\_estimators} & $[100, 1000]$ & Entero \\
+\texttt{min\_child\_samples} & $[5, 100]$ & Entero \\
+\texttt{subsample} & $[0.5, 1.0]$ & Flotante \\
+\texttt{colsample\_bytree} & $[0.5, 1.0]$ & Flotante \\
+\texttt{reg\_alpha} ($L_1$) & $[10^{-8}, 10]$ (log) & Flotante \\
+\texttt{reg\_lambda} ($L_2$) & $[10^{-8}, 10]$ (log) & Flotante \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Funci\'on objetivo LightGBM:
+\begin{equation}
+\mathcal{L}_{\text{LGB}} = \sum_{i=1}^{N}\ell(y_i, \hat{y}_i) + \sum_{j=1}^{T}\Omega(f_j)
+\end{equation}
+donde $\Omega(f) = \gamma L + \frac{1}{2}\lambda \|w\|^2 + \alpha \|w\|_1$.
+
+\subsection{Modelo 2: CatBoost}
+
+Gradient Boosting con ``ordered boosting'' para reducir target leakage interno. Hiperpar\'ametros:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lll}
+\toprule
+\textbf{Par\'ametro} & \textbf{Rango} & \textbf{Tipo} \\
+\midrule
+\texttt{iterations} & $[100, 1000]$ & Entero \\
+\texttt{depth} & $[4, 10]$ & Entero \\
+\texttt{learning\_rate} & $[0.01, 0.3]$ (log) & Flotante \\
+\texttt{l2\_leaf\_reg} & $[10^{-3}, 10]$ (log) & Flotante \\
+\texttt{min\_data\_in\_leaf} & $[5, 100]$ & Entero \\
+\texttt{bootstrap\_type} & \{Bayesian, Bernoulli\} & Categ\'orico \\
+\texttt{subsample} & $[0.5, 1.0]$ (si Bernoulli) & Flotante \\
+\texttt{bagging\_temperature} & $[0.01, 10]$ (si Bayesian) & Flotante \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+P\'erdida usada: RMSE.
+\begin{equation}
+\mathcal{L}_{\text{CB}} = \sqrt{\frac{1}{N}\sum_{i=1}^{N}(y_i - \hat{y}_i)^2}
+\end{equation}
+
+\subsection{Modelo 3: TimeXer (Transformer)}
+
+TimeXer es una arquitectura Transformer adaptada para series temporales con variables ex\'ogenas. Componentes clave:
+
+\subsubsection{Patch Embedding Endógeno}
+La serie target se divide en patches de longitud $P$:
+\begin{equation}
+\text{N\'umero de patches} = \left\lfloor\frac{L_{\text{seq}}}{P}\right\rfloor
+\end{equation}
+Cada patch se proyecta linealmente a dimensi\'on $d_{\text{model}}$:
+\begin{equation}
+\mathbf{e}_i^{\text{en}} = W_{\text{patch}} \cdot \text{patch}_i + \text{PE}(i)
+\end{equation}
+donde PE es ``Positional Embedding'' sinusoidal:
+\begin{align}
+\text{PE}(pos, 2k) &= \sin\!\left(\frac{pos}{10000^{2k/d_{\text{model}}}}\right) \\
+\text{PE}(pos, 2k+1) &= \cos\!\left(\frac{pos}{10000^{2k/d_{\text{model}}}}\right)
+\end{align}
+Se a\~nade un \textbf{global token} aprendible $\mathbf{g} \in \mathbb{R}^{d_{\text{model}}}$.
+
+\subsubsection{Embedding Ex\'ogeno (Inverted)}
+Las variables ex\'ogenas se tratan con embedding invertido:
+\begin{equation}
+\mathbf{e}^{\text{ex}} = W_{\text{inv}} \cdot X_{\text{exo}}^{\top} + b
+\end{equation}
+donde $X_{\text{exo}} \in \mathbb{R}^{L_{\text{seq}} \times (d-1)}$ y la proyecci\'on mapea la dimensi\'on temporal a $d_{\text{model}}$.
+
+\subsubsection{Multi-Head Self-Attention}
+\begin{equation}
+\text{Attention}(Q, K, V) = \text{softmax}\!\left(\frac{QK^{\top}}{\sqrt{d_k}}\right)V
+\end{equation}
+\begin{equation}
+\text{MultiHead}(Q, K, V) = \text{Concat}(\text{head}_1, \ldots, \text{head}_h)W^O
+\end{equation}
+donde $\text{head}_i = \text{Attention}(QW_i^Q, KW_i^K, VW_i^V)$.
+
+\subsubsection{Cross-Attention (Global Token $\leftrightarrow$ Ex\'ogenas)}
+El global token atiende a las variables ex\'ogenas mediante cross-attention:
+\begin{equation}
+\mathbf{g}' = \text{CrossAttn}\!\left(\mathbf{g}, \mathbf{e}^{\text{ex}}, \mathbf{e}^{\text{ex}}\right)
+\end{equation}
+
+\subsubsection{Feed-Forward}
+\begin{equation}
+\text{FFN}(x) = \text{Conv1d}_2\!\left(\sigma\!\left(\text{Conv1d}_1(x)\right)\right)
+\end{equation}
+donde $\sigma \in \{\text{ReLU}, \text{GELU}\}$, y las dimensiones son $d_{\text{model}} \to d_{\text{ff}} \to d_{\text{model}}$.
+
+\subsubsection{Flatten Head}
+\begin{equation}
+\hat{y} = W_{\text{head}} \cdot \text{Flatten}(\text{enc\_out}) + b_{\text{head}}
+\end{equation}
+donde $\text{enc\_out} \in \mathbb{R}^{n_{\text{vars}} \times d_{\text{model}} \times (N_{\text{patches}}+1)}$.
+
+\subsubsection{RevIN (Instance Normalization)}
+Cuando \texttt{use\_norm=False} (como en este proyecto), \textbf{no se aplica}. Si estuviera activo:
+\begin{equation}
+\hat{x} = \frac{x - \mu_{\text{inst}}}{\sigma_{\text{inst}}}, \quad \hat{y}_{\text{final}} = \hat{y} \cdot \sigma_{\text{inst}} + \mu_{\text{inst}}
+\end{equation}
+
+\subsubsection{Hiperpar\'ametros TimeXer}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lll}
+\toprule
+\textbf{Par\'ametro} & \textbf{Rango} & \textbf{Tipo} \\
+\midrule
+\texttt{patch\_len} & $\{4, 8, 12, 16, 24\}$ & Categ\'orico \\
+\texttt{d\_model} & $\{64, 128, 256\}$ & Categ\'orico \\
+\texttt{d\_ff} & $\{256, 512, 1024\}$ & Categ\'orico \\
+\texttt{n\_heads} & $\{4, 8\}$ & Categ\'orico \\
+\texttt{e\_layers} & $[1, 4]$ & Entero \\
+\texttt{dropout} & $[0.0, 0.3]$ & Flotante \\
+\texttt{factor} & $[1, 5]$ & Entero \\
+\texttt{activation} & \{relu, gelu\} & Categ\'orico \\
+\texttt{lr} & $[10^{-5}, 10^{-3}]$ (log) & Flotante \\
+\texttt{batch\_size} & $\{16, 32, 64\}$ & Categ\'orico \\
+\texttt{max\_epochs} & $[10, 50]$ & Entero \\
+\texttt{patience} & $[5, 15]$ & Entero \\
+\texttt{weight\_decay} & $[10^{-6}, 10^{-3}]$ (log) & Flotante \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+P\'erdida: L1 (MAE).
+\begin{equation}
+\mathcal{L}_{\text{TX}} = \frac{1}{N}\sum_{i=1}^{N}|y_i - \hat{y}_i|
+\end{equation}
+
+Optimizador: AdamW con gradient clipping $\|\nabla\| \leq 1.0$.
+
+\subsection{Modelo 4: Moirai-MoE (Foundation Model)}
+
+Moirai-MoE es un \textbf{modelo fundacional pre-entrenado} (Salesforce) para series temporales, basado en Mixture of Experts. \textbf{No se re-entrena}; se usa zero-shot forecasting.
+
+Funciona como:
+\begin{enumerate}
+    \item Se le pasa una ventana de contexto de longitud $L_{\text{ctx}}$ de la serie target (solo $y$, ignora $X$).
+    \item Genera $N_{\text{samples}}$ trayectorias probabil\'isticas.
+    \item La predicci\'on puntual es la \textbf{mediana} de las muestras:
+    \begin{equation}
+    \hat{y}_{t+1} = \text{median}\!\left(\{s^{(j)}_{t+1}\}_{j=1}^{N_{\text{samples}}}\right)
+    \end{equation}
+\end{enumerate}
+
+Hiperpar\'ametros optimizados:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lll}
+\toprule
+\textbf{Par\'ametro} & \textbf{Rango} & \textbf{Tipo} \\
+\midrule
+\texttt{context\_length} & $[64, \min(512, \text{max\_ctx})]$ (step 32) & Entero \\
+\texttt{patch\_size} & $\{16, 32\}$ & Categ\'orico \\
+\texttt{num\_samples} & $[50, 200]$ (step 25) & Entero \\
+\texttt{batch\_size} & $\{16, 32, 64\}$ & Categ\'orico \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ============================================================
+\section{Paso 8: Predicci\'on en Test e Inversi\'on de Escala}
+% ============================================================
+
+\subsection{Predicci\'on en Escala Normalizada}
+
+Cada modelo genera predicciones $\hat{y}_{\text{norm}} \in [0, 1]$ (escala normalizada MinMax). Estas predicciones se visualizan en la gr\'afica ``Predicciones -- Normalizado [0,1]''.
+
+\subsection{Inversi\'on a Escala de Log-Return}
+
+Se aplica la transformaci\'on inversa del \texttt{MinMaxScaler} del target:
+\begin{equation}
+\hat{r}_t = \hat{y}_t^{\text{norm}} \cdot (r_{\max}^{\text{train}} - r_{\min}^{\text{train}}) + r_{\min}^{\text{train}}
+\end{equation}
+donde $r_{\max}^{\text{train}}$ y $r_{\min}^{\text{train}}$ son los l\'imites del scaler ajustado en train.
+
+\subsection{Reconstrucci\'on a Precio}
+
+Se reconstruye el precio predicho a partir del log-return predicho:
+\begin{equation}
+\boxed{\hat{C}_t = C_{t-1} \cdot \exp(\hat{r}_t)}
+\label{eq:recon}
+\end{equation}
+Donde $C_{t-1}$ es el precio de cierre real del d\'ia anterior. Esta funci\'on est\'a implementada con aceleraci\'on Numba cuando est\'a disponible.
+
+% ============================================================
+\section{Paso 9: M\'etricas de Evaluaci\'on}
+% ============================================================
+
+Se calculan las siguientes m\'etricas sobre la escala de \textbf{precio en USD}:
+
+\begin{align}
+\text{MSE} &= \frac{1}{N}\sum_{i=1}^{N}(C_i - \hat{C}_i)^2 \\
+\text{RMSE} &= \sqrt{\text{MSE}} \\
+\text{MAE} &= \frac{1}{N}\sum_{i=1}^{N}|C_i - \hat{C}_i| \\
+\text{R}^2 &= 1 - \frac{\sum_{i=1}^{N}(C_i - \hat{C}_i)^2}{\sum_{i=1}^{N}(C_i - \bar{C})^2}
+\end{align}
+
+% ============================================================
+\section{Paso 10: Generaci\'on de Reporte HTML}
+% ============================================================
+
+Se generan 14 gr\'aficas interactivas Plotly:
+
+\begin{enumerate}
+    \item Precio de cierre hist\'orico
+    \item Log-returns crudos
+    \item Retornos normalizados $[0,1]$
+    \item Importancia de features (MIC) -- barras horizontales
+    \item Walk-Forward folds (5 subgr\'aficas)
+    \item Predicciones en escala normalizada
+    \item Predicciones en escala log-return
+    \item Predicciones en escala precio (USD)
+    \item Serie completa $+$ predicciones overlay
+    \item Zoom en zona de test
+    \item--14. Un gr\'afico individual por modelo vs Real (USD)
+    \item[15.] Comparaci\'on de m\'etricas (barras)
+\end{enumerate}
+
+% ============================================================
+\section{An\'alisis de Inconsistencias Detectadas}
+\label{sec:issues}
+% ============================================================
+
+\subsection*{Resumen R\'apido de Severidad}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{clp{8cm}}
+\toprule
+\textbf{\#} & \textbf{Severidad} & \textbf{Descripci\'on} \\
+\midrule
+1 & \textcolor{critical}{\textbf{CR\'ITICA}} & Log-return calculado con \texttt{shift(-1)} (data leakage + signo invertido) \\
+2 & \textcolor{warning}{\textbf{MODERADA}} & Moirai-MoE usa $y_{\text{test}}$ real en su contexto de ventana (leakage sutil) \\
+3 & \textcolor{warning}{\textbf{MODERADA}} & TimeXer usa $y_{\text{test}}$ real en \texttt{full\_data} para ventana de predicci\'on (leakage) \\
+4 & \textcolor{info}{\textbf{MENOR}} & El modelo predice sobre log-returns normalizados, no sobre log-returns crudos \\
+5 & \textcolor{info}{\textbf{MENOR}} & No hay LSTM en el c\'odigo (a pesar de la pregunta del usuario) \\
+6 & \textcolor{info}{\textbf{MENOR}} & Ruta absoluta hardcodeada para lectura de datos \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ---- Inconsistencia 1 ----
+\subsection{Inconsistencia \#1 -- Log-Return con \texttt{shift(-1)} {\normalfont\textcolor{critical}{[CR\'ITICA]}}}
+
+\textbf{C\'odigo (l\'inea 29 de \texttt{main2.py}):}
+\begin{lstlisting}
+lc = np.log(df['Close'] / df['Close'].shift(-1)).dropna()
+\end{lstlisting}
+
+\textbf{Problema:} \texttt{shift(-1)} desplaza la serie \textbf{hacia adelante}, es decir:
+\[
+r_t = \ln\!\left(\frac{C_t}{C_{t+1}}\right)
+\]
+Esto tiene dos problemas:
+\begin{enumerate}[label=(\alph*)]
+    \item \textbf{Data leakage:} El valor del target $r_t$ en el instante $t$ depende de $C_{t+1}$, que es informaci\'on futura. Cuando el modelo aprende a predecir $r_t$ a partir de features del d\'ia $t$ (o anteriores), est\'a aprendiendo a predecir algo que incluye informaci\'on del futuro en su definici\'on.
+    
+    \item \textbf{Signo invertido:} El log-return resultante tiene signo opuesto al convencional. Si el precio sube ($C_{t+1} > C_t$), el log-return ser\'a \textbf{negativo}, lo cual es contraintuitivo.
+\end{enumerate}
+
+\textbf{Correcci\'on:}
+\begin{lstlisting}
+lc = np.log(df['Close'] / df['Close'].shift(1)).dropna()
+\end{lstlisting}
+Esto da $r_t = \ln(C_t / C_{t-1})$, que es la definici\'on est\'andar.
+
+\textcolor{critical}{\textbf{Nota:}} Sin embargo, como todo el pipeline (entrenamiento, predicci\'on, reconstrucci\'on) opera bajo la misma definici\'on invertida, la \textbf{reconstrucci\'on de precio funciona correctamente de forma interna}. La f\'ormula $\hat{C}_t = C_{t-1} \cdot \exp(\hat{r}_t)$ sigue siendo v\'alida porque el modelo aprende la relaci\'on consistente (aunque invertida). El impacto real de esta inconsistencia es principalmente \textbf{sem\'antico} y en la \textbf{interpretabilidad}, no necesariamente en la precisi\'on del modelo.
+
+% ---- Inconsistencia 2 ----
+\subsection{Inconsistencia \#2 -- Data Leakage en Moirai-MoE {\normalfont\textcolor{warning}{[MODERADA]}}}
+
+\textbf{C\'odigo (\texttt{moraiMOE\_model.py}, l\'ineas 115, 136--144):}
+\begin{lstlisting}
+full_series = np.concatenate([y_train_arr, y_test_arr])
+# ...
+for i in range(len(y_test_arr)):
+    ctx_data = full_series[ctx_start:ctx_end]
+\end{lstlisting}
+
+\textbf{Problema:} Durante la predicci\'on punto a punto en test, la ventana de contexto se extrae de \texttt{full\_series} que contiene \textbf{tanto train como test}. Al predecir $\hat{y}_{t}$, la ventana $[\text{ctx\_start}, t)$ puede incluir valores \textbf{reales} de $y$ ya observados en el test set (es decir, $y_{t-1}, y_{t-2}, \ldots$ del test set, no predicciones previas).
+
+Esto introduce un form de \textbf{leakage temporal suave}: el modelo tiene acceso a valores reales que en producci\'on no estar\'ian disponibles (se tendr\'ian las predicciones propias, no los valores reales).
+
+\textbf{Impacto:} Las m\'etricas del modelo Moirai son \textbf{optimistas} comparadas con un escenario real de despliegue.
+
+% ---- Inconsistencia 3 ----
+\subsection{Inconsistencia \#3 -- Data Leakage en TimeXer {\normalfont\textcolor{warning}{[MODERADA]}}}
+
+\textbf{C\'odigo (\texttt{timexer\_model.py}, l\'ineas 250--255, 341--350):}
+\begin{lstlisting}
+full_data = np.concatenate([train_data, test_data], axis=0)
+# ...
+for i in range(len(test_data)):
+    x_window = full_data[window_start:window_end]
+\end{lstlisting}
+
+\textbf{Problema id\'entico al \#2:} La ventana de entrada al Transformer durante test incluye filas de \texttt{test\_data} con los \textbf{valores reales de $y$}. La \'ultima columna de \texttt{full\_data} es $y$ (target), por lo que al crear la secuencia $[t - L_{\text{seq}}, t)$, las filas que caen en el rango de test contienen $y_{\text{test}}$ real en la \'ultima columna.
+
+\textbf{Impacto:} Las m\'etricas de TimeXer tambi\'en son \textbf{optimistas}.
+
+% ---- Inconsistencia 4 ----
+\subsection{Inconsistencia \#4 -- Dominio de Predicci\'on {\normalfont\textcolor{info}{[MENOR]}}}
+
+\textbf{Los modelos predicen log-returns normalizados $\hat{y} \in [0,1]$} (escala MinMax), no log-returns crudos directamente. Esto es v\'alido y no es un error per se, pero es importante entender que:
+
+\begin{enumerate}
+    \item La inversi\'on de escala se aplica correctamente con \texttt{sct.inverse\_transform()}.
+    \item Las m\'etricas finales se calculan en escala de precio USD, lo cual es correcto.
+    \item Los log-returns crudos se recuperan correctamente antes de la reconstrucci\'on de precio.
+\end{enumerate}
+
+Esta observaci\'on es solo clarificativa; el pipeline es consistente en este aspecto.
+
+% ---- Inconsistencia 5 ----
+\subsection{Inconsistencia \#5 -- No Existe LSTM {\normalfont\textcolor{info}{[MENOR]}}}
+
+El usuario pregunt\'o sobre si ``la LSTM est\'a mal''. \textbf{No hay ning\'un modelo LSTM en el c\'odigo.} Los cuatro modelos son:
+
+\begin{enumerate}
+    \item LightGBM -- Gradient Boosting (\'arboles)
+    \item CatBoost -- Gradient Boosting (\'arboles)
+    \item TimeXer -- Transformer (atenci\'on, NO recurrencia)
+    \item Moirai-MoE -- Foundation Model pre-entrenado (NO LSTM)
+\end{enumerate}
+
+\textbf{TimeXer} usa multi-head self-attention, no celdas LSTM.
+
+% ---- Inconsistencia 6 ----
+\subsection{Inconsistencia \#6 -- Ruta Absoluta Hardcodeada {\normalfont\textcolor{info}{[MENOR]}}}
+
+\textbf{L\'inea 29:}
+\begin{lstlisting}
+df = pd.read_csv(rf"C:\Users\hibra\Desktop\TT\data\tokens\{TOKEN}_2020-2025.csv")
+\end{lstlisting}
+La ruta apunta a \texttt{Desktop\textbackslash TT} pero el proyecto est\'a en \texttt{TT2\textbackslash TT}. Esto podr\'ia causar que se lean datos de una versi\'on diferente del proyecto.
+
+% ============================================================
+\section{Resumen de Correctitud del Pipeline}
+% ============================================================
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lcc}
+\toprule
+\textbf{Componente} & \textbf{Correcto?} & \textbf{Nota} \\
+\midrule
+Descarga de datos & \checkmark & Funcional \\
+Log-return (direcci\'on) & $\times$ & \texttt{shift(-1)} en vez de \texttt{shift(1)} \\
+Normalizaci\'on visual & \checkmark & Solo para gr\'aficas \\
+Feature engineering TA & \checkmark & 4,000+ features \\
+Features macro & \checkmark & FRED + ffill \\
+MinMaxScaler train/test & \checkmark & fit en train, transform en test \\
+MIC feature selection & \checkmark & Solo datos train \\
+Walk-Forward CV & \checkmark & Respeta temporalidad \\
+Optuna optimizaci\'on & \checkmark & Minimiza MAE \\
+LightGBM & \checkmark & Sin leakage interno \\
+CatBoost & \checkmark & Sin leakage interno \\
+TimeXer predicci\'on test & $\times$ & Leakage: $y_{\text{test}}$ real en ventana \\
+Moirai-MoE predicci\'on test & $\times$ & Leakage: $y_{\text{test}}$ real en contexto \\
+Inversi\'on de escala & \checkmark & Correcto \\
+Reconstrucci\'on a precio & \checkmark & Internamente consistente \\
+M\'etricas & \checkmark & MSE, RMSE, MAE, R$^2$ \\
+Reporte HTML & \checkmark & 14+ gr\'aficas Plotly \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\end{document}
