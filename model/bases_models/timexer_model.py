@@ -231,7 +231,7 @@ def objective_timexer_global(trial,X,y,splitter,device=None,seq_len=96,pred_len=
         if trial.should_prune():raise optuna.TrialPruned()
     if not fold_scores:return float("inf")
     ms=float(np.mean(fold_scores))
-    if oof_storage and('best_score'not in oof_storage or ms<oof_storage['best_score']):
+    if oof_storage is not None and('best_score'not in oof_storage or ms<oof_storage['best_score']):
         oof_storage['best_score'],oof_storage['preds'],oof_storage['indices']=ms,fold_preds,fold_indices
     return ms
 
