@@ -3,7 +3,6 @@ import pandas as pd
 from scipy.stats import rankdata
 from numba import njit
 from joblib import Parallel, delayed
-import operator
 @njit(fastmath=True, cache=True)
 def _compute_mic_kernel(x, y, n, B):
     max_mic = 0.0

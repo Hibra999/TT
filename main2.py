@@ -1,12 +1,12 @@
-import pandas as pd;import numpy as np;import optuna;import warnings;import os;import matplotlib;matplotlib.use('Agg');import matplotlib.pyplot as plt;import seaborn as sns
-plt.style.use('ggplot');sns.set_palette('deep')
+import pandas as pd;import numpy as np;import optuna;import warnings;import os;import matplotlib;matplotlib.use('Agg');import matplotlib.pyplot as plt
+plt.style.use('ggplot')
 from data.yfinance_data import download_yf;from data.ccxt_data import download_cx;from features.macroeconomics import macroeconomicos
 from model.bases_models.ligthGBM_model import objective_global,train_final_and_predict_test as lgb_predict_test
 from model.bases_models.catboost_model import objective_catboost_global,train_final_and_predict_test as cb_predict_test
 from model.bases_models.timexer_model import objective_timexer_global,train_final_and_predict_test as tx_predict_test
 from model.bases_models.moraiMOE_model import objective_moirai_moe_global,preload_moirai_module,train_final_and_predict_test as moirai_predict_test
 from model.meta_model.lstm_model import optimize_lstm_meta,get_average_weights
-from preprocessing.oof_generators import collect_oof_predictions,build_oof_dataframe
+from preprocessing.oof_generators import build_oof_dataframe
 from preprocessing.walk_forward import wfrw;from features.tecnical_indicators import TA;from features.top_n import top_k
 from sklearn.preprocessing import MinMaxScaler;import torch
 warnings.filterwarnings("ignore")
@@ -58,11 +58,6 @@ print('  MO...');preload_moirai_module(model_size='small');sm=optuna.create_stud
 
 # Meta LSTM
 print(f'[6/9] Meta LSTM...')
-print(f"DEBUG: OOF Stats:")
-print(f"  LGB keys: {oof_l.keys()} - Best Score: {oof_l.get('best_score', 'N/A')}")
-print(f"  CB keys: {oof_c.keys()} - Best Score: {oof_c.get('best_score', 'N/A')}")
-print(f"  TX keys: {oof_t.keys()} - Best Score: {oof_t.get('best_score', 'N/A')}")
-print(f"  MO keys: {oof_m.keys()} - Best Score: {oof_m.get('best_score', 'N/A')}")
 oof_df=build_oof_dataframe(oof_l,oof_c,oof_t,oof_m,yt)
 print(f'  OOF matrix shape: {oof_df.shape}')
 meta_model,mae_meta,meta_results,bp_mt,study_mt=optimize_lstm_meta(oof_df,device,n_trials=N_MT)

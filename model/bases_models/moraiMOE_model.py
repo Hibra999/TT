@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 import gc
 import warnings
-from typing import Optional,Tuple,Union
+from typing import Optional,Union
 from sklearn.metrics import mean_absolute_error
 from gluonts.dataset.pandas import PandasDataset
 from uni2ts.model.moirai_moe import MoiraiMoEForecast,MoiraiMoEModule
@@ -28,12 +28,6 @@ def get_cached_module(model_size:str='large'):
         _CACHED_MODULE=MoiraiMoEModule.from_pretrained(mp);_CACHED_MODEL_SIZE=model_size
         print(f"Modulo cargado exitosamente: {model_size}")
     return _CACHED_MODULE
-
-def clear_module_cache():
-    global _CACHED_MODULE,_CACHED_MODEL_SIZE
-    if _CACHED_MODULE is not None:
-        del _CACHED_MODULE;_CACHED_MODULE=None;_CACHED_MODEL_SIZE=None
-        torch.cuda.empty_cache();gc.collect()
 
 class MoiraiMoEWrapper:
     def __init__(self,model_size:str='large',prediction_length:int=30,context_length:int=240,patch_size:int=16,num_samples:int=100,batch_size:int=32,device:Optional[torch.device]=None,use_cache:bool=True):
@@ -95,12 +89,6 @@ def objective_moirai_moe_global(trial,X,y,splitter,device=None,pred_len=30,model
             oof_storage['best_score'],oof_storage['preds'],oof_storage['indices']=ms,fold_preds,fold_indices
         return ms
     except:import traceback;traceback.print_exc();torch.cuda.empty_cache();gc.collect();return float('inf')
-
-def predict_with_best_params(X:pd.DataFrame,y:pd.Series,best_params:dict,pred_len:int=30,model_size:str='large',freq:str='D')->Tuple[np.ndarray,MoiraiMoEWrapper]:
-    wrapper=MoiraiMoEWrapper(model_size=model_size,prediction_length=pred_len,context_length=best_params.get('context_length',240),patch_size=best_params.get('patch_size',16),num_samples=best_params.get('num_samples',100),batch_size=best_params.get('batch_size',32),use_cache=True)
-    y_arr=y.values if isinstance(y,pd.Series)else y
-    fc=list(wrapper.predictor.predict(prepare_simple_dataset(y_arr,freq=freq)))
-    return(np.median(fc[0].samples,axis=0),wrapper)if fc else(np.array([]),wrapper)
 
 def preload_moirai_module(model_size:str='large'):
     print(f"Precargando modulo Moirai-MoE ({model_size})...");m=get_cached_module(model_size);print("Modulo precargado exitosamente!");return m

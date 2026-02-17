@@ -43,7 +43,6 @@ def objective_global(trial, X, y, splitter, oof_storage=None):
     # Guardar mejores parámetros
     if oof_storage is not None:
         if 'best_score' not in oof_storage or mean_score < oof_storage['best_score']:
-            print(f"DEBUG: LGB updating best score: {mean_score:.4f}")
             oof_storage['best_score'] = mean_score
             oof_storage['params'] = param.copy()
             oof_storage['preds'] = fold_preds
