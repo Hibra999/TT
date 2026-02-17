@@ -137,8 +137,17 @@ def build_oof_dataframe(oof_lgb,oof_cb,oof_tx,oof_moirai,y_train):
     if len(p_cb)>0:dfs.append(pd.DataFrame({'idx':i_cb.astype(int),'pred_catboost':p_cb}))
     if len(p_tx)>0:dfs.append(pd.DataFrame({'idx':i_tx.astype(int),'pred_timexer':p_tx}))
     if len(p_mo)>0:dfs.append(pd.DataFrame({'idx':i_mo.astype(int),'pred_moirai':p_mo}))
+    
     if not dfs:return pd.DataFrame()
+    
+    print(f"DEBUG: Found {len(dfs)} model OOF dataframes")
+    for i, df in enumerate(dfs):
+        print(f"DEBUG: DF {i} shape: {df.shape}, head indices: {df['idx'].head().tolist()}")
+        
     res=dfs[0]
-    for df in dfs[1:]:res=pd.merge(res,df,on='idx',how='inner')
+    for i, df in enumerate(dfs[1:]):
+        res=pd.merge(res,df,on='idx',how='inner')
+        print(f"DEBUG: After merging DF {i+1}, shape: {res.shape}")
+        
     res['target']=res['idx'].apply(lambda i:ya[i]if i<len(ya)else np.nan)
     return res.dropna().reset_index(drop=True)

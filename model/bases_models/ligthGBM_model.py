@@ -25,6 +25,9 @@ def objective_global(trial, X, y, splitter, oof_storage=None):
         param["subsample_freq"] = 1
     
     fold_scores = []
+    fold_preds = []
+    fold_indices = []
+    
     for t_idx, v_idx in splitter.split(y):
         X_train, y_train = X.iloc[t_idx], y.iloc[t_idx]
         X_val, y_val = X.iloc[v_idx], y.iloc[v_idx]
@@ -32,14 +35,19 @@ def objective_global(trial, X, y, splitter, oof_storage=None):
         model.fit(X_train, y_train)
         y_pred = model.predict(X_val)
         fold_scores.append(mean_absolute_error(y_val, y_pred))
+        fold_preds.append(y_pred)
+        fold_indices.append(v_idx)
     
     mean_score = np.mean(fold_scores)
     
     # Guardar mejores parámetros
     if oof_storage is not None:
         if 'best_score' not in oof_storage or mean_score < oof_storage['best_score']:
+            print(f"DEBUG: LGB updating best score: {mean_score:.4f}")
             oof_storage['best_score'] = mean_score
             oof_storage['params'] = param.copy()
+            oof_storage['preds'] = fold_preds
+            oof_storage['indices'] = fold_indices
     
     return mean_score
 

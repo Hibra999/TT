@@ -91,7 +91,7 @@ def objective_moirai_moe_global(trial,X,y,splitter,device=None,pred_len=30,model
                 torch.cuda.empty_cache();gc.collect()
         if not fold_scores:return float('inf')
         ms=np.mean(fold_scores)
-        if oof_storage and('best_score'not in oof_storage or ms<oof_storage['best_score']):
+        if oof_storage is not None and('best_score'not in oof_storage or ms<oof_storage['best_score']):
             oof_storage['best_score'],oof_storage['preds'],oof_storage['indices']=ms,fold_preds,fold_indices
         return ms
     except:import traceback;traceback.print_exc();torch.cuda.empty_cache();gc.collect();return float('inf')
