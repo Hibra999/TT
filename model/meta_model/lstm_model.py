@@ -119,35 +119,3 @@ def get_average_weights(weights_history,model_names):
     vw=weights_history[~np.isnan(weights_history).any(axis=1)]
     if len(vw)==0:return pd.DataFrame({'Modelo':model_names,'Peso_Promedio':[np.nan]*len(model_names)})
     return pd.DataFrame({'Modelo':model_names,'Peso_Promedio':np.mean(vw,axis=0),'Peso_Std':np.std(vw,axis=0),'Peso_Min':np.min(vw,axis=0),'Peso_Max':np.max(vw,axis=0)})
-
-def collect_oof_predictions(oof_storage):
-    if not oof_storage or'preds'not in oof_storage or'indices'not in oof_storage:return np.array([]),np.array([]),0.0
-    ap,ai=[],[]
-    for p,i in zip(oof_storage['preds'],oof_storage['indices']):
-        pf,if_=np.array(p).flatten(),np.array(i).flatten();ml=min(len(pf),len(if_))
-        ap.extend(pf[:ml]);ai.extend(if_[:ml])
-    return np.array(ap),np.array(ai),oof_storage.get('best_score',0.0)
-
-def build_oof_dataframe(oof_lgb,oof_cb,oof_tx,oof_moirai,y_train):
-    ya=y_train.values if hasattr(y_train,'values')else np.array(y_train)
-    p_lgb,i_lgb,_=collect_oof_predictions(oof_lgb);p_cb,i_cb,_=collect_oof_predictions(oof_cb)
-    p_tx,i_tx,_=collect_oof_predictions(oof_tx);p_mo,i_mo,_=collect_oof_predictions(oof_moirai)
-    dfs=[]
-    if len(p_lgb)>0:dfs.append(pd.DataFrame({'idx':i_lgb.astype(int),'pred_lgb':p_lgb}))
-    if len(p_cb)>0:dfs.append(pd.DataFrame({'idx':i_cb.astype(int),'pred_catboost':p_cb}))
-    if len(p_tx)>0:dfs.append(pd.DataFrame({'idx':i_tx.astype(int),'pred_timexer':p_tx}))
-    if len(p_mo)>0:dfs.append(pd.DataFrame({'idx':i_mo.astype(int),'pred_moirai':p_mo}))
-    
-    if not dfs:return pd.DataFrame()
-    
-    print(f"DEBUG: Found {len(dfs)} model OOF dataframes")
-    for i, df in enumerate(dfs):
-        print(f"DEBUG: DF {i} shape: {df.shape}, head indices: {df['idx'].head().tolist()}")
-        
-    res=dfs[0]
-    for i, df in enumerate(dfs[1:]):
-        res=pd.merge(res,df,on='idx',how='inner')
-        print(f"DEBUG: After merging DF {i+1}, shape: {res.shape}")
-        
-    res['target']=res['idx'].apply(lambda i:ya[i]if i<len(ya)else np.nan)
-    return res.dropna().reset_index(drop=True)
