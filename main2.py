@@ -24,7 +24,7 @@ else:
 def met(y,p):y,p=np.asarray(y,np.float64),np.asarray(p,np.float64);mse=np.mean((y-p)**2);mae=np.mean(np.abs(y-p));ss=np.sum((y-p)**2);st=np.sum((y-np.mean(y))**2);return {'MSE':round(mse,6),'RMSE':round(np.sqrt(mse),6),'MAE':round(mae,6),'R2':round(1-ss/st if st>0 else 0.,6)}
 MDL={'LGB':('#1f77b4','LightGBM'),'CB':('#2ca02c','CatBoost'),'TX':('#9467bd','TimeXer'),'MO':('#ff7f0e','Moirai-MoE'),'MT':('#d62728','Meta LSTM')}
 # ===== CONFIG =====
-TOKEN='KO'
+TOKEN='AAPL'
 N_LGB,N_CB,N_TX,N_MO,N_MT=3,3,3,3,3
 START,END='2020-01-01','2025-12-31'
 # ==================
