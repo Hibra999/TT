@@ -1,0 +1,19 @@
+# Git
+.git
+.gitattributes
+
+# Python cache
+__pycache__
+*.pyc
+*.pyo
+
+# Generated images
+*.png
+
+# IDE
+.vscode
+.idea
+
+# Docker
+Dockerfile
+.dockerignore

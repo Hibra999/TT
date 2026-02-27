@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import seaborn as sns
 import plotly.express as px
+import os
 import warnings
 import streamlit as st
 import matplotlib.pyplot as plt
@@ -100,7 +101,8 @@ with st.sidebar:
     n_trials_lstm=st.number_input("Trials Meta LSTM",min_value=1,max_value=1000,value=3,step=1)
 
 st.title('TT')
-df=pd.read_csv(rf"C:\Users\hibra\Desktop\TT\data\tokens\{token}2020-2025.csv")
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+df=pd.read_csv(os.path.join(_BASE_DIR, "data", "tokens", f"{token}2020-2025.csv"))
 
 tab1,tab2,tab3,tab4,tab5=st.tabs(["Datos & Retornos","Caracteristicas (TA/Macro)","MICFS","Walk Folward","BaseModelsTrain"])
 
