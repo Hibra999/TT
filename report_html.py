@@ -48,9 +48,17 @@ def generate_html_report(token,cp,gi_v,pr_r,preds_p,mp,MDL,zs,ze,out_dir):
   <div class="card"><h2>M\u00e9tricas por Modelo</h2>
     <table class="metrics-table"><thead><tr><th>Modelo</th><th>MSE</th><th>RMSE</th><th>MAE</th><th>R\u00b2</th></tr></thead><tbody>
 """
+    # Find best value per metric (min for MSE/RMSE/MAE, max for R2)
+    best_vals={}
+    for mn in ['MSE','RMSE','MAE','R2']:
+        vals=[m_[mn] for m_ in mp_c]
+        best_vals[mn]=max(vals) if mn=='R2' else min(vals)
+    def _fmt(val,mn):
+        s=f'{val:.6f}'
+        return f'<strong>{s}</strong>' if val==best_vals[mn] else s
     for i,m_ in enumerate(mp_c):
         best='<span class="best-badge">BEST</span>' if i==0 else ''
-        html+=f'<tr><td><span class="model-badge" style="background:{m_["Color"]}">{m_["Modelo"]}</span>{best}</td><td>{m_["MSE"]:.6f}</td><td>{m_["RMSE"]:.6f}</td><td>{m_["MAE"]:.6f}</td><td>{m_["R2"]:.6f}</td></tr>\n'
+        html+=f'<tr><td><span class="model-badge" style="background:{m_["Color"]}">{m_["Modelo"]}</span>{best}</td><td>{_fmt(m_["MSE"],"MSE")}</td><td>{_fmt(m_["RMSE"],"RMSE")}</td><td>{_fmt(m_["MAE"],"MAE")}</td><td>{_fmt(m_["R2"],"R2")}</td></tr>\n'
     html+="""    </tbody></table></div>
   <div class="card"><h2>Comparaci\u00f3n de M\u00e9tricas</h2>
     <div class="metrics-grid">
