@@ -51,7 +51,7 @@ MDL = {
     'XG':  ('#8c564b', 'XGBoost (Base SOTA)'),
     'BL':  ('#e377c2', 'Base LSTM (Base SOTA)'),
     'MT':  ('#17becf', 'Meta LSTM (Ensamble Actual)'),
-    'SM':  ('#d62728', 'Meta LSTM SOTA (Ensamble Nuevo)')
+    'SM':  ('#d62728', 'Yu et al. [44] 2025')
 }
 
 # ===== CONFIG =====
@@ -207,6 +207,11 @@ if meta_model_sota is not None:
                 x_t = torch.from_numpy(window).unsqueeze(0).to(device)
                 pmt_sota[i] = meta_model_sota(x_t).cpu().item()
 
+# Truncar las predicciones base para que inicien exactamente al mismo tiempo que los Meta Learners
+for arr in [pl, pc, pt, pm, px, pb]:
+    if start_idx < len(arr):
+        arr[:start_idx] = np.nan
+
 
 # Métricas y reconstrucciones
 print(f'[10/10] Calculando Métricas Comparativas y Reporte...')
@@ -260,18 +265,12 @@ def generate_compare_report(token, cp, gi_v, pr_r, preds_p, mp, MDL, zs, ze, out
     zoom_x = list(range(zs, ze))
     zoom_close = [float(v) for v in cp[zs:ze]]
     
-    meta_actual = preds_p.get('MT')
-    meta_sota = preds_p.get('SM')
-    
-    zoom_actual = {}
-    if meta_actual is not None and (~np.isnan(meta_actual)).any():
-        m = ~np.isnan(meta_actual)
-        zoom_actual = {'x': [int(x) for x in gi_v[m]], 'y': [float(y) for y in meta_actual[m]]}
-        
-    zoom_sota = {}
-    if meta_sota is not None and (~np.isnan(meta_sota)).any():
-        m = ~np.isnan(meta_sota)
-        zoom_sota = {'x': [int(x) for x in gi_v[m]], 'y': [float(y) for y in meta_sota[m]]}
+    zoom_models = {}
+    for km, (cl, nm) in MDL.items():
+        v = preds_p[km]
+        m = ~np.isnan(v)
+        if m.any():
+            zoom_models[km] = {'name': nm, 'x': [int(x) for x in gi_v[m]], 'y': [float(y) for y in v[m]], 'color': cl}
     
     mp_c = []
     mp_metas = []
@@ -316,15 +315,15 @@ def generate_compare_report(token, cp, gi_v, pr_r, preds_p, mp, MDL, zs, ze, out
 <body>
 <div class="container">
   <h1>{token} - Comparativa: Ensamble Actual vs Nuevo SOTA</h1>
-  <p class="subtitle">Predicciones Finales en Zona Test (Escala USD)</p>
+  <p class="subtitle">Predicciones Finales y Modelos Base (Alineados temporalmente)</p>
   
   <div class="charts-grid">
     <div class="card">
-      <h2>Ensamble Actual (Meta LSTM)</h2>
+      <h2>Ensamble Actual (Meta LSTM + Modelos Base Actuales)</h2>
       <div id="zoom-chart-actual"></div>
     </div>
     <div class="card">
-      <h2>Ensamble Nuevo (SOTA Stacking Meta LSTM)</h2>
+      <h2>Ensamble Nuevo ({MDL['SM'][1]} + Modelos Base SOTA)</h2>
       <div id="zoom-chart-sota"></div>
     </div>
   </div>
@@ -358,22 +357,30 @@ def generate_compare_report(token, cp, gi_v, pr_r, preds_p, mp, MDL, zs, ze, out
 <script>
 """
     html += f"const zoomX={json.dumps(zoom_x)};\nconst zoomClose={json.dumps(zoom_close)};\n"
-    html += f"const zoomActual={json.dumps(zoom_actual)};\nconst zoomSota={json.dumps(zoom_sota)};\n"
+    html += f"const zoomModels={json.dumps(zoom_models)};\n"
     html += f"const metricsData={json.dumps(mp_metas)};\n"
-    html += f"const cActual='{MDL['MT'][0]}';\nconst cSota='{MDL['SM'][0]}';\n"
-    html += f"const nActual='{MDL['MT'][1]}';\nconst nSota='{MDL['SM'][1]}';\n"
     
     html += """const dL={paper_bgcolor:'rgba(0,0,0,0)',plot_bgcolor:'rgba(0,0,0,0)',font:{color:'#333',family:'Segoe UI,system-ui,sans-serif'},xaxis:{gridcolor:'#eee',linecolor:'#ccc'},yaxis:{gridcolor:'#eee',linecolor:'#ccc'},margin:{t:40,r:30,b:50,l:60},legend:{bgcolor:'rgba(0,0,0,0)',font:{size:11}}};
 
 // Chart Actual
 const actClose=[{x:zoomX,y:zoomClose,type:'scatter',mode:'lines',name:'Close (USD)',line:{color:'#000',width:2}}];
-if(zoomActual.x && zoomActual.x.length>0) actClose.push({x:zoomActual.x,y:zoomActual.y,type:'scatter',mode:'lines+markers',name:nActual,line:{color:cActual,width:1.5},marker:{size:4,color:cActual}});
-Plotly.newPlot('zoom-chart-actual',actClose,{...dL,title:{text:'Precio Close vs Ensamble Actual',font:{size:14,color:'#333'}},xaxis:{...dL.xaxis,title:'Indice temporal'},yaxis:{...dL.yaxis,title:'USD'},hovermode:'x unified'},{responsive:true});
+['LGB','CB','TX','MO','MT'].forEach(k => {
+    if(zoomModels[k] && zoomModels[k].x.length>0) {
+        let isMeta = (k==='MT');
+        actClose.push({x:zoomModels[k].x, y:zoomModels[k].y, type:'scatter', mode:isMeta?'lines+markers':'lines', name:zoomModels[k].name, line:{color:zoomModels[k].color, width:isMeta?2.5:1.2, dash:isMeta?'solid':'dot'}, marker:{size:isMeta?5:3, color:zoomModels[k].color}});
+    }
+});
+Plotly.newPlot('zoom-chart-actual',actClose,{...dL,title:{text:'Precio Close vs Base Models + Ensamble Actual',font:{size:14,color:'#333'}},xaxis:{...dL.xaxis,title:'Indice temporal'},yaxis:{...dL.yaxis,title:'USD'},hovermode:'x unified'},{responsive:true});
 
 // Chart SOTA
 const sotaClose=[{x:zoomX,y:zoomClose,type:'scatter',mode:'lines',name:'Close (USD)',line:{color:'#000',width:2}}];
-if(zoomSota.x && zoomSota.x.length>0) sotaClose.push({x:zoomSota.x,y:zoomSota.y,type:'scatter',mode:'lines+markers',name:nSota,line:{color:cSota,width:1.5},marker:{size:4,color:cSota}});
-Plotly.newPlot('zoom-chart-sota',sotaClose,{...dL,title:{text:'Precio Close vs Ensamble Nuevo SOTA',font:{size:14,color:'#333'}},xaxis:{...dL.xaxis,title:'Indice temporal'},yaxis:{...dL.yaxis,title:'USD'},hovermode:'x unified'},{responsive:true});
+['LGB','CB','XG','BL','SM'].forEach(k => {
+    if(zoomModels[k] && zoomModels[k].x.length>0) {
+        let isMeta = (k==='SM');
+        sotaClose.push({x:zoomModels[k].x, y:zoomModels[k].y, type:'scatter', mode:isMeta?'lines+markers':'lines', name:zoomModels[k].name, line:{color:zoomModels[k].color, width:isMeta?2.5:1.2, dash:isMeta?'solid':'dot'}, marker:{size:isMeta?5:3, color:zoomModels[k].color}});
+    }
+});
+Plotly.newPlot('zoom-chart-sota',sotaClose,{...dL,title:{text:'Precio Close vs Base Models + Yu et al. [44] 2025',font:{size:14,color:'#333'}},xaxis:{...dL.xaxis,title:'Indice temporal'},yaxis:{...dL.yaxis,title:'USD'},hovermode:'x unified'},{responsive:true});
 
 ['MSE','RMSE','MAE','R2'].forEach((mn,i)=>{const ids=['chart-mse','chart-rmse','chart-mae','chart-r2'];const titles=['MSE','RMSE','MAE','R2'];
 Plotly.newPlot(ids[i],[{x:metricsData.map(m=>m.Modelo),y:metricsData.map(m=>m[mn]),type:'bar',marker:{color:metricsData.map(m=>m.Color),opacity:.85},text:metricsData.map(m=>m[mn].toFixed(4)),textposition:'outside',textfont:{color:'#333',size:11}}],{...dL,title:{text:titles[i],font:{size:14,color:'#333'}},xaxis:{...dL.xaxis,tickangle:0},showlegend:false,margin:{t:50,r:20,b:60,l:60}},{responsive:true,displayModeBar:false});});
