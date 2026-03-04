@@ -182,22 +182,26 @@ pb, _ = train_final_base_lstm(Xt, yt, Xe, bp_b, device)
 # Generando Predicciones Meta
 print(f'[9/10] Predicciones Ensambles (Meta-Learners)...')
 pmt_actual = np.full(len(ye), np.nan)
+pmt_sota = np.full(len(ye), np.nan)
+
+# Alinear ambos metas al mismo índice de inicio de test para que sean 100% comparables
+start_idx = max(ws_meta_actual, ws_meta_sota) - 1
+
 if meta_model_actual is not None:
     test_matrix_actual = np.column_stack([pl, pc, pt, pm]).astype(np.float32)
     meta_model_actual.eval()
     with torch.no_grad():
-        for i in range(ws_meta_actual - 1, len(ye)):
+        for i in range(start_idx, len(ye)):
             window = test_matrix_actual[i - ws_meta_actual + 1:i + 1]
             if not np.isnan(window).any():
                 x_t = torch.from_numpy(window).unsqueeze(0).to(device)
                 pmt_actual[i] = meta_model_actual(x_t).cpu().item()
 
-pmt_sota = np.full(len(ye), np.nan)
 if meta_model_sota is not None:
     test_matrix_sota = np.column_stack([pl, pc, px, pb]).astype(np.float32)
     meta_model_sota.eval()
     with torch.no_grad():
-        for i in range(ws_meta_sota - 1, len(ye)):
+        for i in range(start_idx, len(ye)):
             window = test_matrix_sota[i - ws_meta_sota + 1:i + 1]
             if not np.isnan(window).any():
                 x_t = torch.from_numpy(window).unsqueeze(0).to(device)
@@ -250,24 +254,35 @@ mp.sort(key=lambda x: x['MAE'])
 
 zs, ze = max(0, int(gi_v.min()) - 50), min(len(cp), int(gi_v.max()) + 50)
 
-# Sobrescribimos la forma en que report_html recibe `preds_p` para que plotee los 8 modelos
 import json
 def generate_compare_report(token, cp, gi_v, pr_r, preds_p, mp, MDL, zs, ze, out_dir):
-    """Wrapper para generar report_compare.html"""
+    """Genera report_compare.html aislador para los Ensambles"""
     zoom_x = list(range(zs, ze))
     zoom_close = [float(v) for v in cp[zs:ze]]
-    zoom_models = {}
-    for km, (cl, nm) in MDL.items():
-        v = preds_p[km]
-        m = ~np.isnan(v)
-        if m.any():
-            zoom_models[nm] = {'x': [int(x) for x in gi_v[m]], 'y': [float(y) for y in v[m]], 'color': cl}
+    
+    meta_actual = preds_p.get('MT')
+    meta_sota = preds_p.get('SM')
+    
+    zoom_actual = {}
+    if meta_actual is not None and (~np.isnan(meta_actual)).any():
+        m = ~np.isnan(meta_actual)
+        zoom_actual = {'x': [int(x) for x in gi_v[m]], 'y': [float(y) for y in meta_actual[m]]}
+        
+    zoom_sota = {}
+    if meta_sota is not None and (~np.isnan(meta_sota)).any():
+        m = ~np.isnan(meta_sota)
+        zoom_sota = {'x': [int(x) for x in gi_v[m]], 'y': [float(y) for y in meta_sota[m]]}
     
     mp_c = []
+    mp_metas = []
     for row in mp:
         r = dict(row)
         for km, (cl, nm) in MDL.items():
-            if nm == r['Modelo']: r['Color'] = cl; break
+            if nm == r['Modelo']: 
+                r['Color'] = cl
+                if km in ['MT', 'SM']:
+                    mp_metas.append(r)
+                break
         mp_c.append(r)
         
     html = f"""<!DOCTYPE html>
@@ -292,53 +307,79 @@ def generate_compare_report(token, cp, gi_v, pr_r, preds_p, mp, MDL, zs, ze, out
   .model-badge{{display:inline-block;padding:4px 12px;border-radius:20px;font-weight:600;font-size:.85rem;color:#fff}}
   .best-badge{{display:inline-block;margin-left:8px;padding:2px 8px;border-radius:10px;background:#eee;color:#000;font-size:.7rem;font-weight:600;border:1px solid #ccc}}
   .metrics-grid{{display:grid;grid-template-columns:1fr 1fr;gap:20px}}
+  .charts-grid{{display:grid;grid-template-columns:1fr 1fr;gap:20px}}
+  @media(max-width:1024px){{.charts-grid{{grid-template-columns:1fr}}}}
   @media(max-width:768px){{.metrics-grid{{grid-template-columns:1fr}}}}
   footer{{text-align:center;color:#999;font-size:.8rem;margin-top:40px;padding:20px}}
 </style>
 </head>
 <body>
 <div class="container">
-  <h1>{token} \\u2014 Comparativa Ensamble Actual vs SOTA</h1>
-  <p class="subtitle">Todos los modelos base y resultados meta (Escala USD)</p>
-  <div class="card"><h2>Zoom \\u2014 Zona Test</h2><div id="zoom-chart"></div></div>
-  <div class="card"><h2>M\\u00e9tricas por Modelo</h2>
-    <table class="metrics-table"><thead><tr><th>Modelo</th><th>MSE</th><th>RMSE</th><th>MAE</th><th>R\\u00b2</th></tr></thead><tbody>
+  <h1>{token} - Comparativa: Ensamble Actual vs Nuevo SOTA</h1>
+  <p class="subtitle">Predicciones Finales en Zona Test (Escala USD)</p>
+  
+  <div class="charts-grid">
+    <div class="card">
+      <h2>Ensamble Actual (Meta LSTM)</h2>
+      <div id="zoom-chart-actual"></div>
+    </div>
+    <div class="card">
+      <h2>Ensamble Nuevo (SOTA Stacking Meta LSTM)</h2>
+      <div id="zoom-chart-sota"></div>
+    </div>
+  </div>
+
+  <div class="card"><h2>Metricas Generales de los Meta Learners</h2>
+    <table class="metrics-table"><thead><tr><th>Modelo</th><th>MSE</th><th>RMSE</th><th>MAE</th><th>R2</th></tr></thead><tbody>
 """
     best_vals = {}
     for mn in ['MSE', 'RMSE', 'MAE', 'R2']:
-        vals = [m_[mn] for m_ in mp_c]
-        best_vals[mn] = max(vals) if mn == 'R2' else min(vals)
+        vals = [m_[mn] for m_ in mp_metas]
+        if vals: best_vals[mn] = max(vals) if mn == 'R2' else min(vals)
         
     def _fmt(val, mn):
+        if mn not in best_vals: return f'{val:.6f}'
         s = f'{val:.6f}'
         return f'<strong>{s}</strong>' if val == best_vals[mn] else s
         
-    for i, m_ in enumerate(mp_c):
+    for i, m_ in enumerate(mp_metas):
         best = '<span class="best-badge">BEST</span>' if i == 0 else ''
         html += f'<tr><td><span class="model-badge" style="background:{m_["Color"]}">{m_["Modelo"]}</span>{best}</td><td>{_fmt(m_["MSE"], "MSE")}</td><td>{_fmt(m_["RMSE"], "RMSE")}</td><td>{_fmt(m_["MAE"], "MAE")}</td><td>{_fmt(m_["R2"], "R2")}</td></tr>\n'
         
     html += """    </tbody></table></div>
-  <div class="card"><h2>Comparaci\\u00f3n de M\\u00e9tricas</h2>
+  <div class="card"><h2>Comparacion Visual de Metricas</h2>
     <div class="metrics-grid">
       <div id="chart-mse"></div><div id="chart-rmse"></div>
       <div id="chart-mae"></div><div id="chart-r2"></div>
     </div>
   </div>
-  <footer>Generado autom\\u00e1ticamente \\u00b7 main_compare.py</footer>
+  <footer>Generado automaticamente por main_compare.py</footer>
 </div>
 <script>
 """
     html += f"const zoomX={json.dumps(zoom_x)};\nconst zoomClose={json.dumps(zoom_close)};\n"
-    html += f"const zoomModels={json.dumps(zoom_models)};\nconst metricsData={json.dumps(mp_c)};\n"
+    html += f"const zoomActual={json.dumps(zoom_actual)};\nconst zoomSota={json.dumps(zoom_sota)};\n"
+    html += f"const metricsData={json.dumps(mp_metas)};\n"
+    html += f"const cActual='{MDL['MT'][0]}';\nconst cSota='{MDL['SM'][0]}';\n"
+    html += f"const nActual='{MDL['MT'][1]}';\nconst nSota='{MDL['SM'][1]}';\n"
+    
     html += """const dL={paper_bgcolor:'rgba(0,0,0,0)',plot_bgcolor:'rgba(0,0,0,0)',font:{color:'#333',family:'Segoe UI,system-ui,sans-serif'},xaxis:{gridcolor:'#eee',linecolor:'#ccc'},yaxis:{gridcolor:'#eee',linecolor:'#ccc'},margin:{t:40,r:30,b:50,l:60},legend:{bgcolor:'rgba(0,0,0,0)',font:{size:11}}};
-const zt=[{x:zoomX,y:zoomClose,type:'scatter',mode:'lines',name:'Close (USD)',line:{color:'#000',width:2}}];
-for(const[n,d] of Object.entries(zoomModels))zt.push({x:d.x,y:d.y,type:'scatter',mode:'lines+markers',name:n,line:{color:d.color,width:1.5},marker:{size:4,color:d.color}});
-Plotly.newPlot('zoom-chart',zt,{...dL,title:{text:'Precio Close + Todas las predicciones',font:{size:14,color:'#333'}},xaxis:{...dL.xaxis,title:'\\u00cdndice temporal'},yaxis:{...dL.yaxis,title:'USD'},hovermode:'x unified'},{responsive:true});
-['MSE','RMSE','MAE','R2'].forEach((mn,i)=>{const ids=['chart-mse','chart-rmse','chart-mae','chart-r2'];const titles=['MSE','RMSE','MAE','R\\u00b2'];
-Plotly.newPlot(ids[i],[{x:metricsData.map(m=>m.Modelo),y:metricsData.map(m=>m[mn]),type:'bar',marker:{color:metricsData.map(m=>m.Color),opacity:.85},text:metricsData.map(m=>m[mn].toFixed(4)),textposition:'outside',textfont:{color:'#333',size:11}}],{...dL,title:{text:titles[i],font:{size:14,color:'#333'}},xaxis:{...dL.xaxis,tickangle:-20},showlegend:false,margin:{t:50,r:20,b:60,l:60}},{responsive:true,displayModeBar:false});});
+
+// Chart Actual
+const actClose=[{x:zoomX,y:zoomClose,type:'scatter',mode:'lines',name:'Close (USD)',line:{color:'#000',width:2}}];
+if(zoomActual.x && zoomActual.x.length>0) actClose.push({x:zoomActual.x,y:zoomActual.y,type:'scatter',mode:'lines+markers',name:nActual,line:{color:cActual,width:1.5},marker:{size:4,color:cActual}});
+Plotly.newPlot('zoom-chart-actual',actClose,{...dL,title:{text:'Precio Close vs Ensamble Actual',font:{size:14,color:'#333'}},xaxis:{...dL.xaxis,title:'Indice temporal'},yaxis:{...dL.yaxis,title:'USD'},hovermode:'x unified'},{responsive:true});
+
+// Chart SOTA
+const sotaClose=[{x:zoomX,y:zoomClose,type:'scatter',mode:'lines',name:'Close (USD)',line:{color:'#000',width:2}}];
+if(zoomSota.x && zoomSota.x.length>0) sotaClose.push({x:zoomSota.x,y:zoomSota.y,type:'scatter',mode:'lines+markers',name:nSota,line:{color:cSota,width:1.5},marker:{size:4,color:cSota}});
+Plotly.newPlot('zoom-chart-sota',sotaClose,{...dL,title:{text:'Precio Close vs Ensamble Nuevo SOTA',font:{size:14,color:'#333'}},xaxis:{...dL.xaxis,title:'Indice temporal'},yaxis:{...dL.yaxis,title:'USD'},hovermode:'x unified'},{responsive:true});
+
+['MSE','RMSE','MAE','R2'].forEach((mn,i)=>{const ids=['chart-mse','chart-rmse','chart-mae','chart-r2'];const titles=['MSE','RMSE','MAE','R2'];
+Plotly.newPlot(ids[i],[{x:metricsData.map(m=>m.Modelo),y:metricsData.map(m=>m[mn]),type:'bar',marker:{color:metricsData.map(m=>m.Color),opacity:.85},text:metricsData.map(m=>m[mn].toFixed(4)),textposition:'outside',textfont:{color:'#333',size:11}}],{...dL,title:{text:titles[i],font:{size:14,color:'#333'}},xaxis:{...dL.xaxis,tickangle:0},showlegend:false,margin:{t:50,r:20,b:60,l:60}},{responsive:true,displayModeBar:false});});
 </script></body></html>"""
     out_html = os.path.join(out_dir, 'report_compare.html')
     with open(out_html, 'w', encoding='utf-8') as fh: fh.write(html)
-    print(f'Listo: {out_html}')
+    print(f'Listo Comparativa Limpia: {out_html}')
 
 generate_compare_report(TOKEN, cp, gi_v, pr_r, preds_p, mp, MDL, zs, ze, os.path.dirname(__file__))
