@@ -2,15 +2,11 @@
 SOTA Stacking Ensemble: CatBoost + LightGBM + XGBoost + BaseLSTM → Meta LSTM
 Implementación basada en el paper de referencia con ponderación dinámica convexa.
 """
-import numpy as np
-import pandas as pd
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import optuna
-import xgboost as xgb
-from torch.utils.data import Dataset, DataLoader
-from sklearn.metrics import mean_absolute_error
+import numpy as np; import pandas as pd; import torch; import torch.nn as nn; import torch.nn.functional as F; import optuna; import xgboost as xgb
+from torch.utils.data import Dataset, DataLoader; from sklearn.metrics import mean_absolute_error; from numba import njit
+@njit(cache=True)
+def _fast_valid_indices(oof_matrix, y_true, window_size):
+    return [t for t in range(window_size - 1, len(y_true)) if not np.isnan(oof_matrix[t - window_size + 1:t + 1]).any() and not np.isnan(y_true[t])]
 
 # ═══════════════════════════════════════════════════════════════════
 #  XGBoost Base Learner
@@ -30,7 +26,7 @@ def objective_xgboost_global(trial, X, y, splitter, oof_storage=None):
         "gamma": trial.suggest_float("gamma", 1e-8, 5.0, log=True),
         "random_state": 42,
         "tree_method": "hist",
-        "device": "cuda",
+        "n_jobs": 1,
         "verbosity": 0,
     }
 
@@ -394,12 +390,7 @@ class StackingMetaDataset(Dataset):
         self.valid_indices = self._get_valid_indices()
 
     def _get_valid_indices(self):
-        valid = []
-        for t in range(self.window_size - 1, len(self.y_true)):
-            w = self.oof_matrix[t - self.window_size + 1:t + 1]
-            if not np.isnan(w).any() and not np.isnan(self.y_true[t]):
-                valid.append(t)
-        return valid
+        return _fast_valid_indices(self.oof_matrix, self.y_true, self.window_size)
 
     def __len__(self):
         return len(self.valid_indices)

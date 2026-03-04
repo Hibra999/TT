@@ -7,7 +7,7 @@ from model.bases_models.catboost_model import objective_catboost_global, train_f
 from model.bases_models.timexer_model import objective_timexer_global, train_final_and_predict_test as tx_predict_test
 from model.bases_models.moraiMOE_model import objective_moirai_moe_global, preload_moirai_module, train_final_and_predict_test as moirai_predict_test
 from model.meta_model.lstm_model import optimize_lstm_meta, get_average_weights
-from preprocessing.oof_generators import build_oof_dataframe
+from preprocessing.oof_generators import build_oof_dataframe, collect_oof_predictions
 
 # Modelos SOTA
 from model.sota.stacking_ensemble import (
@@ -18,6 +18,25 @@ from model.sota.stacking_ensemble import (
 
 from preprocessing.walk_forward import wfrw; from features.tecnical_indicators import TA; from features.top_n import top_k
 from sklearn.preprocessing import MinMaxScaler; import torch
+
+
+def build_oof_dataframe_ablation(oof_lgb, oof_cb, oof_moirai, y):
+    """Construye OOF para Ensamble Actual SIN TimeXer."""
+    preds_lgb, idx_lgb, _ = collect_oof_predictions(oof_lgb)
+    preds_cb, idx_cb, _ = collect_oof_predictions(oof_cb)
+    preds_moirai, idx_moirai, _ = collect_oof_predictions(oof_moirai)
+    
+    df_lgb = pd.DataFrame({'idx': idx_lgb, 'lgb': preds_lgb})
+    df_cb = pd.DataFrame({'idx': idx_cb, 'catboost': preds_cb})
+    df_moirai = pd.DataFrame({'idx': idx_moirai, 'moirai': preds_moirai})
+    
+    y_array = y.values if isinstance(y, pd.Series) else np.array(y)
+    
+    merged = df_lgb.merge(df_cb, on='idx', how='inner').merge(df_moirai, on='idx', how='inner')
+    merged['target'] = merged['idx'].apply(lambda i: y_array[int(i)] if int(i) < len(y_array) else np.nan)
+    merged = merged.dropna().sort_values('idx').reset_index(drop=True)
+    return merged
+
 
 warnings.filterwarnings("ignore")
 try:
@@ -34,13 +53,14 @@ if HAS_NUMBA:
 else:
     def _recon(yl, cp, n): return cp * np.exp(yl)
 
+@njit(cache=True)
+def _met_numba(y, p):
+    m_ = np.mean((y - p) ** 2); ss = np.sum((y - p) ** 2); st = np.sum((y - np.mean(y)) ** 2)
+    return m_, np.sqrt(m_), np.mean(np.abs(y - p)), 1 - ss / st if st > 0 else 0.
+
 def met(y, p):
-    y, p = np.asarray(y, np.float64), np.asarray(p, np.float64)
-    mse = np.mean((y - p) ** 2)
-    mae = np.mean(np.abs(y - p))
-    ss = np.sum((y - p) ** 2)
-    st = np.sum((y - np.mean(y)) ** 2)
-    return {'MSE': round(mse, 6), 'RMSE': round(np.sqrt(mse), 6), 'MAE': round(mae, 6), 'R2': round(1 - ss / st if st > 0 else 0., 6)}
+    y, p = np.asarray(y, np.float64), np.asarray(p, np.float64); mse, rmse, mae, r2 = _met_numba(y, p)
+    return {'MSE': round(mse, 6), 'RMSE': round(rmse, 6), 'MAE': round(mae, 6), 'R2': round(r2, 6)}
 
 # Diccionario unificado para reporte (Colores hex para distinguir)
 MDL = {
@@ -51,37 +71,50 @@ MDL = {
     'XG':  ('#8c564b', 'XGBoost (Base SOTA)'),
     'BL':  ('#e377c2', 'Base LSTM (Base SOTA)'),
     'MT':  ('#17becf', 'Meta LSTM (Ensamble Actual)'),
+    'AB':  ('#e377c2', 'Ours (Ensamble Actual Sin TimeXer)'),
     'SM':  ('#d62728', 'Yu et al. [44] 2025')
 }
 
 # ===== CONFIG =====
-TOKEN = 'ETH/USDT'
-# Incrementado a 5 trials para que pueda generar OOF suficientes o al menos 3.
-N_LGB, N_CB = 3, 3
-N_TX, N_MO = 3, 3
-N_XG, N_BL = 3, 3
-N_MT, N_SM = 3, 3
+TOKEN = '^GSPC'
+N_LGB, N_CB = 5, 5
+N_TX, N_MO = 5, 5
+N_XG, N_BL = 5, 5
+N_MT, N_AB, N_SM = 5, 5, 5
 START, END = '2020-01-01', '2025-12-31'
 # ==================
 
-print(f'[1/10] Descargando datos...')
+print(f'[1/11] Descargando datos...')
 download_yf(['KO', 'AAPL', 'NVDA', 'JNJ', '^GSPC', 'GC=F', 'CBOE'], START, END)
 download_cx(['BTC/USDT', 'ETH/USDT'], START, END)
 df = pd.read_csv(os.path.join(os.path.dirname(__file__), 'data', 'tokens', f'{TOKEN.replace("/", "-")}_2020-2025.csv'))
-lc = np.log(df['Close'] / df['Close'].shift(1)).dropna()
-lc_n = (lc - lc.min()) / (lc.max() - lc.min())
 
 # Features
-print(f'[2/10] Construyendo Features (TA + Macro)...')
+print(f'[2/11] Construyendo Features (TA + Macro)...')
 df_ta = TA(df); df_ma = macroeconomicos(df['Date_final'])
 
 # MIC
-print(f'[3/10] Selección de Variables (MIC)...')
-df_ta_r = df_ta.reset_index(drop=True); df_ma_r = df_ma.reset_index(drop=True); lc_r = lc.reset_index(drop=True)
-df_f = pd.concat([df_ta_r, df_ma_r], axis=1).iloc[1:]
-ml = min(len(df_f), len(lc_r))
-df_f = df_f.iloc[:ml].reset_index(drop=True)
-lc_r = lc_r.iloc[:ml].reset_index(drop=True)
+print(f'[3/11] Selección de Variables (MIC)...')
+target_series = np.log(df['Close'].shift(-1) / df['Close'])
+
+# Alinear fechas de macro con las fechas exactas del dataframe de precios
+df_dates = pd.to_datetime(df['Date_final']).dt.date
+df_ma_aligned = df_ma.reindex(df_dates).ffill().bfill().reset_index(drop=True)
+
+df_ta_r = df_ta.reset_index(drop=True)
+target_series_r = target_series.reset_index(drop=True)
+
+df_combined = pd.concat([df_ta_r, df_ma_aligned], axis=1)
+df_combined['target_lc'] = target_series_r
+df_combined['orig_idx'] = df_combined.index
+
+# Eliminar SOLO los NaNs resultantes de los indicadores técnicos al principio
+# y el último NaN del target shift(-1). No eliminará el final completo.
+df_combined = df_combined.dropna().reset_index(drop=True)
+
+orig_idx_array = df_combined['orig_idx'].values
+lc_r = df_combined['target_lc']
+df_f = df_combined.drop(columns=['target_lc', 'orig_idx'])
 
 drop = [c for c in df_f.columns if df_f[c].max() - df_f[c].min() < 1e-8]
 df_f = df_f.drop(columns=drop).replace([np.inf, -np.inf], 0.0)
@@ -104,12 +137,12 @@ Xt, Xe = Xtr_s[feats].reset_index(drop=True), Xte_s[feats].reset_index(drop=True
 yt, ye = ytr_s.reset_index(drop=True), yte_s.reset_index(drop=True)
 
 # Walk Forward
-print(f'[4/10] Split Walk-Forward...')
+print(f'[4/11] Split Walk-Forward...')
 k = 5; sp = wfrw(yt, k=k, fh_val=30)
 
 # Training Base Models
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-print(f'[5/10] Entrenando Modelos Base ({device})...')
+print(f'[5/11] Entrenando Modelos Base ({device})...')
 oof_l, oof_c = {}, {}
 print('  > LightGBM (Compartido)...')
 sl = optuna.create_study(direction='minimize')
@@ -150,22 +183,30 @@ bp_b = oof_b.get('params', sb.best_params)
 
 
 # Meta Ensamble Actual
-print(f'[6/10] Entrenando Meta LSTM (Ensamble Actual)...')
+print(f'[6/11] Entrenando Meta LSTM (Ensamble Actual Completo)...')
 oof_df_actual = build_oof_dataframe(oof_l, oof_c, oof_t, oof_m, yt)
 print(f'  OOF matrix shape: {oof_df_actual.shape}')
-meta_model_actual, mae_meta_actual, _, bp_mt, _ = optimize_lstm_meta(oof_df_actual, device, n_trials=N_MT)
+meta_model_actual, _, _, bp_mt, _ = optimize_lstm_meta(oof_df_actual, device, n_trials=N_MT)
 ws_meta_actual = bp_mt.get('window_size', 10) if meta_model_actual is not None else 10
 
+# Meta Ensamble Ablation (Sin TimeXer)
+print(f'[7/11] Entrenando Meta LSTM Ours (Sin TimeXer)...')
+oof_df_ablation = build_oof_dataframe_ablation(oof_l, oof_c, oof_m, yt)
+print(f'  OOF matrix shape: {oof_df_ablation.shape}')
+# Reusamos la lógica de optimización de LSTM actual ya que la estructura base no cambia (solo el # features)
+meta_model_ablation, _, _, bp_ab, _ = optimize_lstm_meta(oof_df_ablation, device, n_trials=N_AB)
+ws_meta_ablation = bp_ab.get('window_size', 10) if meta_model_ablation is not None else 10
+
 # Meta Ensamble SOTA
-print(f'[7/10] Entrenando Stacking Meta LSTM (Modelo SOTA)...')
+print(f'[8/11] Entrenando Stacking Meta LSTM (Modelo Yu et al.)...')
 oof_df_sota = build_oof_dataframe_sota(oof_l, oof_c, oof_x, oof_b, yt)
 print(f'  OOF matrix shape: {oof_df_sota.shape}')
-meta_model_sota, mae_meta_sota, _, bp_sm, _ = optimize_stacking_meta(oof_df_sota, device, n_trials=N_SM)
+meta_model_sota, _, _, bp_sm, _ = optimize_stacking_meta(oof_df_sota, device, n_trials=N_SM)
 ws_meta_sota = bp_sm.get('window_size', 10) if meta_model_sota is not None else 10
 
 
 # Generando Predicciones Base
-print(f'[8/10] Predicciones en Set de Prueba (Modelos Base)...')
+print(f'[9/11] Predicciones en Set de Prueba (Modelos Base)...')
 pl, _ = lgb_predict_test(Xt, yt, Xe, bp_l)
 pc, _ = cb_predict_test(Xt, yt, Xe, bp_c)
 
@@ -180,12 +221,13 @@ pb, _ = train_final_base_lstm(Xt, yt, Xe, bp_b, device)
 
 
 # Generando Predicciones Meta
-print(f'[9/10] Predicciones Ensambles (Meta-Learners)...')
+print(f'[10/11] Predicciones Ensambles (Meta-Learners)...')
 pmt_actual = np.full(len(ye), np.nan)
+pmt_ablation = np.full(len(ye), np.nan)
 pmt_sota = np.full(len(ye), np.nan)
 
-# Alinear ambos metas al mismo índice de inicio de test para que sean 100% comparables
-start_idx = max(ws_meta_actual, ws_meta_sota) - 1
+# Alinear todos los metas al mismo índice de inicio de test
+start_idx = max(ws_meta_actual, ws_meta_ablation, ws_meta_sota) - 1
 
 if meta_model_actual is not None:
     test_matrix_actual = np.column_stack([pl, pc, pt, pm]).astype(np.float32)
@@ -196,6 +238,16 @@ if meta_model_actual is not None:
             if not np.isnan(window).any():
                 x_t = torch.from_numpy(window).unsqueeze(0).to(device)
                 pmt_actual[i] = meta_model_actual(x_t).cpu().item()
+
+if meta_model_ablation is not None:
+    test_matrix_ablation = np.column_stack([pl, pc, pm]).astype(np.float32)
+    meta_model_ablation.eval()
+    with torch.no_grad():
+        for i in range(start_idx, len(ye)):
+            window = test_matrix_ablation[i - ws_meta_ablation + 1:i + 1]
+            if not np.isnan(window).any():
+                x_t = torch.from_numpy(window).unsqueeze(0).to(device)
+                pmt_ablation[i] = meta_model_ablation(x_t).cpu().item()
 
 if meta_model_sota is not None:
     test_matrix_sota = np.column_stack([pl, pc, px, pb]).astype(np.float32)
@@ -214,7 +266,7 @@ for arr in [pl, pc, pt, pm, px, pb]:
 
 
 # Métricas y reconstrucciones
-print(f'[10/10] Calculando Métricas Comparativas y Reporte...')
+print(f'[11/11] Calculando Métricas Comparativas y Reporte...')
 yv = ye.values
 n = len(yv)
 idx = np.arange(n)
@@ -222,10 +274,12 @@ idx = np.arange(n)
 yt_log = sct.inverse_transform(yv.reshape(-1, 1)).flatten()
 
 cp = df['Close'].values
-gi = np.arange(ts, ts + n)
-val = gi < len(cp)
-gi_v = gi[val]
-prev = cp[gi_v - 1]
+test_orig_indices = orig_idx_array[ts : ts + n]
+prev = cp[test_orig_indices]
+val = test_orig_indices < len(cp)
+
+gi_v = test_orig_indices[val] + 1
+prev = prev[val]
 
 pr_r = _recon(yt_log[val], prev, int(val.sum()))
 
@@ -244,6 +298,7 @@ preds_p = {
     'XG':  safe_inv_recon(px),
     'BL':  safe_inv_recon(pb),
     'MT':  safe_inv_recon(pmt_actual),
+    'AB':  safe_inv_recon(pmt_ablation),
     'SM':  safe_inv_recon(pmt_sota)
 }
 
@@ -252,7 +307,8 @@ for km, v in preds_p.items():
     if (~np.isnan(v)).any():
         v_valid = v[~np.isnan(v)]
         y_valid = pr_r[~np.isnan(v)]
-        mp.append({'Modelo': MDL[km][1], **met(y_valid, v_valid)})
+        if len(v_valid) > 0 and len(y_valid) > 0:
+            mp.append({'Modelo': MDL[km][1], **met(y_valid, v_valid)})
 
 # Ordenar el reporte por MAE descendente para mejor visualización
 mp.sort(key=lambda x: x['MAE'])
@@ -279,7 +335,7 @@ def generate_compare_report(token, cp, gi_v, pr_r, preds_p, mp, MDL, zs, ze, out
         for km, (cl, nm) in MDL.items():
             if nm == r['Modelo']: 
                 r['Color'] = cl
-                if km in ['MT', 'SM']:
+                if km in ['MT', 'AB', 'SM']:
                     mp_metas.append(r)
                 break
         mp_c.append(r)
@@ -306,7 +362,7 @@ def generate_compare_report(token, cp, gi_v, pr_r, preds_p, mp, MDL, zs, ze, out
   .model-badge{{display:inline-block;padding:4px 12px;border-radius:20px;font-weight:600;font-size:.85rem;color:#fff}}
   .best-badge{{display:inline-block;margin-left:8px;padding:2px 8px;border-radius:10px;background:#eee;color:#000;font-size:.7rem;font-weight:600;border:1px solid #ccc}}
   .metrics-grid{{display:grid;grid-template-columns:1fr 1fr;gap:20px}}
-  .charts-grid{{display:grid;grid-template-columns:1fr 1fr;gap:20px}}
+  .charts-grid{{display:grid;grid-template-columns:1fr 1fr 1fr;gap:20px}}
   @media(max-width:1024px){{.charts-grid{{grid-template-columns:1fr}}}}
   @media(max-width:768px){{.metrics-grid{{grid-template-columns:1fr}}}}
   footer{{text-align:center;color:#999;font-size:.8rem;margin-top:40px;padding:20px}}
@@ -314,16 +370,20 @@ def generate_compare_report(token, cp, gi_v, pr_r, preds_p, mp, MDL, zs, ze, out
 </head>
 <body>
 <div class="container">
-  <h1>{token} - Comparativa: Ensamble Actual vs Nuevo SOTA</h1>
+  <h1>{token} - Comparativa: Ensamble Actual vs Ours vs Yu et al.</h1>
   <p class="subtitle">Predicciones Finales y Modelos Base (Alineados temporalmente)</p>
   
   <div class="charts-grid">
     <div class="card">
-      <h2>Ensamble Actual (Meta LSTM + Modelos Base Actuales)</h2>
+      <h2>Ensamble Actual</h2>
       <div id="zoom-chart-actual"></div>
     </div>
     <div class="card">
-      <h2>Ensamble Nuevo ({MDL['SM'][1]} + Modelos Base SOTA)</h2>
+      <h2>Ours (Sin TimeXer)</h2>
+      <div id="zoom-chart-ablation"></div>
+    </div>
+    <div class="card">
+      <h2>Yu et al. [44] 2025</h2>
       <div id="zoom-chart-sota"></div>
     </div>
   </div>
@@ -332,9 +392,10 @@ def generate_compare_report(token, cp, gi_v, pr_r, preds_p, mp, MDL, zs, ze, out
     <table class="metrics-table"><thead><tr><th>Modelo</th><th>MSE</th><th>RMSE</th><th>MAE</th><th>R2</th></tr></thead><tbody>
 """
     best_vals = {}
-    for mn in ['MSE', 'RMSE', 'MAE', 'R2']:
-        vals = [m_[mn] for m_ in mp_metas]
-        if vals: best_vals[mn] = max(vals) if mn == 'R2' else min(vals)
+    if mp_metas:
+        for mn in ['MSE', 'RMSE', 'MAE', 'R2']:
+            vals = [m_[mn] for m_ in mp_metas]
+            if vals: best_vals[mn] = max(vals) if mn == 'R2' else min(vals)
         
     def _fmt(val, mn):
         if mn not in best_vals: return f'{val:.6f}'
@@ -360,27 +421,31 @@ def generate_compare_report(token, cp, gi_v, pr_r, preds_p, mp, MDL, zs, ze, out
     html += f"const zoomModels={json.dumps(zoom_models)};\n"
     html += f"const metricsData={json.dumps(mp_metas)};\n"
     
-    html += """const dL={paper_bgcolor:'rgba(0,0,0,0)',plot_bgcolor:'rgba(0,0,0,0)',font:{color:'#333',family:'Segoe UI,system-ui,sans-serif'},xaxis:{gridcolor:'#eee',linecolor:'#ccc'},yaxis:{gridcolor:'#eee',linecolor:'#ccc'},margin:{t:40,r:30,b:50,l:60},legend:{bgcolor:'rgba(0,0,0,0)',font:{size:11}}};
+    html += """const dL={paper_bgcolor:'rgba(0,0,0,0)',plot_bgcolor:'rgba(0,0,0,0)',font:{color:'#333',family:'Segoe UI,system-ui,sans-serif'},xaxis:{gridcolor:'#eee',linecolor:'#ccc'},yaxis:{gridcolor:'#eee',linecolor:'#ccc'},margin:{t:40,r:30,b:50,l:60},legend:{bgcolor:'rgba(0,0,0,0)',font:{size:11},orientation:'h',y:-0.2}};
 
-// Chart Actual
-const actClose=[{x:zoomX,y:zoomClose,type:'scatter',mode:'lines',name:'Close (USD)',line:{color:'#000',width:2}}];
-['LGB','CB','TX','MO','MT'].forEach(k => {
-    if(zoomModels[k] && zoomModels[k].x.length>0) {
-        let isMeta = (k==='MT');
-        actClose.push({x:zoomModels[k].x, y:zoomModels[k].y, type:'scatter', mode:isMeta?'lines+markers':'lines', name:zoomModels[k].name, line:{color:zoomModels[k].color, width:isMeta?2.5:1.2, dash:isMeta?'solid':'dot'}, marker:{size:isMeta?5:3, color:zoomModels[k].color}});
-    }
-});
-Plotly.newPlot('zoom-chart-actual',actClose,{...dL,title:{text:'Precio Close vs Base Models + Ensamble Actual',font:{size:14,color:'#333'}},xaxis:{...dL.xaxis,title:'Indice temporal'},yaxis:{...dL.yaxis,title:'USD'},hovermode:'x unified'},{responsive:true});
+// Wrapper function para graficar
+function drawChart(divId, titleTxt, keys, metaKey) {
+    const data = [{x:zoomX, y:zoomClose, type:'scatter', mode:'lines', name:'Close (USD)', line:{color:'#000', width:2}}];
+    keys.forEach(k => {
+        if(zoomModels[k] && zoomModels[k].x.length > 0) {
+            let isMeta = (k === metaKey);
+            data.push({
+                x: zoomModels[k].x, 
+                y: zoomModels[k].y, 
+                type: 'scatter', 
+                mode: isMeta ? 'lines+markers' : 'lines', 
+                name: zoomModels[k].name, 
+                line: {color: zoomModels[k].color, width: isMeta ? 2.5 : 1.2, dash: isMeta ? 'solid' : 'dot'}, 
+                marker: {size: isMeta ? 4 : 2, color: zoomModels[k].color}
+            });
+        }
+    });
+    Plotly.newPlot(divId, data, {...dL, title: {text: titleTxt, font: {size: 14, color: '#333'}}, xaxis: {...dL.xaxis, title: 'Indice'}, yaxis: {...dL.yaxis, title: 'USD'}, hovermode: 'x unified'}, {responsive: true});
+}
 
-// Chart SOTA
-const sotaClose=[{x:zoomX,y:zoomClose,type:'scatter',mode:'lines',name:'Close (USD)',line:{color:'#000',width:2}}];
-['LGB','CB','XG','BL','SM'].forEach(k => {
-    if(zoomModels[k] && zoomModels[k].x.length>0) {
-        let isMeta = (k==='SM');
-        sotaClose.push({x:zoomModels[k].x, y:zoomModels[k].y, type:'scatter', mode:isMeta?'lines+markers':'lines', name:zoomModels[k].name, line:{color:zoomModels[k].color, width:isMeta?2.5:1.2, dash:isMeta?'solid':'dot'}, marker:{size:isMeta?5:3, color:zoomModels[k].color}});
-    }
-});
-Plotly.newPlot('zoom-chart-sota',sotaClose,{...dL,title:{text:'Precio Close vs Base Models + Yu et al. [44] 2025',font:{size:14,color:'#333'}},xaxis:{...dL.xaxis,title:'Indice temporal'},yaxis:{...dL.yaxis,title:'USD'},hovermode:'x unified'},{responsive:true});
+drawChart('zoom-chart-actual', 'Precio Close vs Actual', ['LGB','CB','TX','MO','MT'], 'MT');
+drawChart('zoom-chart-ablation', 'Precio Close vs Ours', ['LGB','CB','MO','AB'], 'AB');
+drawChart('zoom-chart-sota', 'Precio Close vs Yu et al. 2025', ['LGB','CB','XG','BL','SM'], 'SM');
 
 ['MSE','RMSE','MAE','R2'].forEach((mn,i)=>{const ids=['chart-mse','chart-rmse','chart-mae','chart-r2'];const titles=['MSE','RMSE','MAE','R2'];
 Plotly.newPlot(ids[i],[{x:metricsData.map(m=>m.Modelo),y:metricsData.map(m=>m[mn]),type:'bar',marker:{color:metricsData.map(m=>m.Color),opacity:.85},text:metricsData.map(m=>m[mn].toFixed(4)),textposition:'outside',textfont:{color:'#333',size:11}}],{...dL,title:{text:titles[i],font:{size:14,color:'#333'}},xaxis:{...dL.xaxis,tickangle:0},showlegend:false,margin:{t:50,r:20,b:60,l:60}},{responsive:true,displayModeBar:false});});
