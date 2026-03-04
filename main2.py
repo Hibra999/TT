@@ -187,3 +187,8 @@ plt.tight_layout(rect=[0,0,1,0.98])
 out=os.path.join(os.path.dirname(__file__),'report.png')
 fig.savefig(out,dpi=200,bbox_inches='tight',facecolor='white')
 plt.close(fig);print(f'Listo: {out}')
+
+# ===== HTML REPORT =====
+print('Generando report.html...')
+from report_html import generate_html_report
+generate_html_report(TOKEN,cp,gi_v,pr_r,preds_p,mp,MDL,zs,ze,os.path.dirname(__file__))
