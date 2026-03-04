@@ -201,8 +201,15 @@ with tab3:
     st.dataframe(X_train,use_container_width=True)
 
 with tab4:
-    k=5
-    splitter=wfrw(y_train,k=k,fh_val=30)
+    st.subheader("Configuracion Walk-Forward")
+    col_wf1,col_wf2,col_wf3=st.columns(3)
+    with col_wf1:
+        wr_selected=st.select_slider("Window Ratio",options=[0.3,0.4,0.5,0.6,0.7],value=0.5)
+    with col_wf2:
+        k_selected=st.selectbox("Folds (K)",options=[3,5,7],index=1)
+    with col_wf3:
+        fh_selected=st.selectbox("Horizonte (FH)",options=[15,30,45,60],index=1)
+    splitter=wfrw(y_train,k=k_selected,fh_val=fh_selected,window_ratio=wr_selected)
     fig_tt=go.Figure()
     fig_tt.add_trace(go.Scatter(x=y_train.index.tolist(),y=y_train.tolist(),name='Train',mode='lines',line=dict(color=PROFESSIONAL_STYLE['colors']['primary'], width=2.5),fill='tozeroy',fillcolor='rgba(31, 119, 180, 0.15)'))
     test_x=[i+len(y_train) for i in y_test.index.tolist()]
@@ -212,24 +219,31 @@ with tab4:
     fig_tt.update_xaxes(showgrid=True,gridcolor=PROFESSIONAL_STYLE['colors']['grid'],title_font=dict(size=13))
     fig_tt.update_yaxes(showgrid=True,gridcolor=PROFESSIONAL_STYLE['colors']['grid'],title_font=dict(size=13))
     st.plotly_chart(fig_tt,use_container_width=True)
-    fold_colors_train=['#1f77b4','#2ca02c','#9467bd','#8c564b','#e377c2']
-    fold_colors_val=['#ff7f0e','#d62728','#bcbd22','#17becf','#7f7f7f']
-    fig_folds=make_subplots(rows=k,cols=1,shared_xaxes=True,vertical_spacing=0.05,subplot_titles=[f'Fold {i+1}' for i in range(k)])
-    for i in range(k):
+    fold_colors_train=['#1f77b4','#2ca02c','#9467bd','#8c564b','#e377c2','#7f7f7f','#bcbd22']
+    fold_colors_val=['#ff7f0e','#d62728','#bcbd22','#17becf','#7f7f7f','#e377c2','#8c564b']
+    fig_folds=make_subplots(rows=k_selected,cols=1,shared_xaxes=True,vertical_spacing=0.05,subplot_titles=[f'Fold {i+1}' for i in range(k_selected)])
+    for i in range(k_selected):
         fig_folds.layout.annotations[i].update(font=dict(size=14, weight='bold'))
-    for i,(t_idx,v_idx) in enumerate(wfrw(y_train,k=k,fh_val=30).split(y_train)):
-        fig_folds.add_trace(go.Scatter(x=y_train.index[t_idx].tolist(),y=y_train.iloc[t_idx].tolist(),mode='lines',name=f'Train Fold {i+1}',line=dict(color=fold_colors_train[i], width=2),showlegend=(i==0),legendgroup='train'),row=i+1,col=1)
-        fig_folds.add_trace(go.Scatter(x=y_train.index[v_idx].tolist(),y=y_train.iloc[v_idx].tolist(),mode='lines',name=f'Val Fold {i+1}',line=dict(color=fold_colors_val[i], width=3),showlegend=(i==0),legendgroup='val'),row=i+1,col=1)
-    fig_folds.update_layout(height=900,template='plotly_white',title=dict(text='Walk-Forward Cross-Validation Folds',x=0.5,xanchor='center',font=dict(size=20, family='Arial', weight='bold')),paper_bgcolor='#f6f1e9',plot_bgcolor='#f6f1e9',margin=dict(l=70, r=40, t=120, b=70),showlegend=True,legend=dict(orientation='h',yanchor='bottom',y=1.02,xanchor='center',x=0.5,bgcolor='rgba(255, 255, 255, 0.8)',font=dict(size=12),bordercolor='lightgray',borderwidth=1))
-    for i in range(k):
+    for i,(t_idx,v_idx) in enumerate(wfrw(y_train,k=k_selected,fh_val=fh_selected,window_ratio=wr_selected).split(y_train)):
+        fig_folds.add_trace(go.Scatter(x=y_train.index[t_idx].tolist(),y=y_train.iloc[t_idx].tolist(),mode='lines',name=f'Train Fold {i+1}',line=dict(color=fold_colors_train[i%len(fold_colors_train)], width=2),showlegend=(i==0),legendgroup='train'),row=i+1,col=1)
+        fig_folds.add_trace(go.Scatter(x=y_train.index[v_idx].tolist(),y=y_train.iloc[v_idx].tolist(),mode='lines',name=f'Val Fold {i+1}',line=dict(color=fold_colors_val[i%len(fold_colors_val)], width=3),showlegend=(i==0),legendgroup='val'),row=i+1,col=1)
+    fig_folds.update_layout(height=250*k_selected,template='plotly_white',title=dict(text=f'Walk-Forward Cross-Validation (K={k_selected}, FH={fh_selected}, WR={wr_selected})',x=0.5,xanchor='center',font=dict(size=20, family='Arial', weight='bold')),paper_bgcolor='#f6f1e9',plot_bgcolor='#f6f1e9',margin=dict(l=70, r=40, t=120, b=70),showlegend=True,legend=dict(orientation='h',yanchor='bottom',y=1.02,xanchor='center',x=0.5,bgcolor='rgba(255, 255, 255, 0.8)',font=dict(size=12),bordercolor='lightgray',borderwidth=1))
+    for i in range(k_selected):
         fig_folds.update_yaxes(title_text='Valor',row=i+1,col=1,title_font=dict(size=12),gridcolor=PROFESSIONAL_STYLE['colors']['grid'])
-    fig_folds.update_xaxes(title_text='Índice Temporal',row=k,col=1,title_font=dict(size=13),gridcolor=PROFESSIONAL_STYLE['colors']['grid'])
+    fig_folds.update_xaxes(title_text='Índice Temporal',row=k_selected,col=1,title_font=dict(size=13),gridcolor=PROFESSIONAL_STYLE['colors']['grid'])
     st.plotly_chart(fig_folds,use_container_width=True)
 
 with tab5:
     device=torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     st.write(f"Device: {device}")
     st.subheader("Configuracion de Entrenamiento")
+    col_cfg1,col_cfg2,col_cfg3=st.columns(3)
+    with col_cfg1:
+        st.metric("Window Ratio",wr_selected)
+    with col_cfg2:
+        st.metric("Folds (K)",k_selected)
+    with col_cfg3:
+        st.metric("Horizonte (FH)",fh_selected)
     col1,col2,col3,col4,col5=st.columns(5)
     with col1:
         st.metric("LightGBM Trials",n_trials_lgb)
@@ -261,7 +275,7 @@ with tab5:
         st.write("Optimizando TimeXer...")
         with st.spinner('Optimizando TimeXer'):
             study_tx=optuna.create_study(direction="minimize")
-            study_tx.optimize(lambda trial:objective_timexer_global(trial,X_train,y_train,splitter,device=device,seq_len=96,pred_len=30,features='MS',oof_storage=oof_tx),n_trials=n_trials_tx,n_jobs=1)
+            study_tx.optimize(lambda trial:objective_timexer_global(trial,X_train,y_train,splitter,device=device,seq_len=96,pred_len=fh_selected,features='MS',oof_storage=oof_tx),n_trials=n_trials_tx,n_jobs=1)
             best_params_tx=study_tx.best_params
             st.json(best_params_tx)
             st.write(f"Mejor MAE TimeXer: {study_tx.best_value:.4f}")
@@ -269,7 +283,7 @@ with tab5:
         with st.spinner('Optimizando Moirai-MoE'):
             preload_moirai_module(model_size='small')
             study_moirai=optuna.create_study(direction="minimize")
-            study_moirai.optimize(lambda trial:objective_moirai_moe_global(trial,X_train,y_train,splitter,device=device,pred_len=30,model_size='small',freq='D',use_full_train=True,oof_storage=oof_moirai),n_trials=n_trials_moirai,n_jobs=1)
+            study_moirai.optimize(lambda trial:objective_moirai_moe_global(trial,X_train,y_train,splitter,device=device,pred_len=fh_selected,model_size='small',freq='D',use_full_train=True,oof_storage=oof_moirai),n_trials=n_trials_moirai,n_jobs=1)
             best_params_moirai=study_moirai.best_params
             st.json(best_params_moirai)
             st.write(f"Mejor MAE Moirai: {study_moirai.best_value:.4f}")
