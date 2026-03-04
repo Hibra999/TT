@@ -1,5 +1,4 @@
-import pandas as pd;import numpy as np;import optuna;import warnings;import os;import matplotlib;matplotlib.use('Agg');import matplotlib.pyplot as plt
-plt.style.use('ggplot')
+import pandas as pd;import numpy as np;import optuna;import warnings;import os
 from data.yfinance_data import download_yf;from data.ccxt_data import download_cx;from features.macroeconomics import macroeconomicos
 from model.bases_models.ligthGBM_model import objective_global,train_final_and_predict_test as lgb_predict_test
 from model.bases_models.catboost_model import objective_catboost_global,train_final_and_predict_test as cb_predict_test
@@ -108,87 +107,10 @@ pr_r=_recon(yt_log[val],prev,int(val.sum()));pr_l=_recon(pl_l[val],prev,int(val.
 pr_t=np.where(~np.isnan(pt_l[val]),prev*np.exp(pt_l[val]),np.nan);pr_m=np.where(~np.isnan(pm_l[val]),prev*np.exp(pm_l[val]),np.nan)
 pr_mt=np.where(~np.isnan(pmt_l[val]),prev*np.exp(pmt_l[val]),np.nan)
 preds_p={'LGB':pr_l,'CB':pr_c,'TX':pr_t,'MO':pr_m,'MT':pr_mt}
-# ===== MATPLOTLIB REPORT =====
-print(f'[9/9] Generando report.png...')
-def _add_preds_ax(ax,x,real,data,rl='Real'):
-    ax.plot(x,real,color='black',linewidth=1.5,label=rl)
-    for km,(cl,nm) in MDL.items():
-        v=data[km];m=~np.isnan(v)
-        if m.any():ax.plot(np.asarray(x)[m],v[m],color=cl,linewidth=1.0,label=nm)
-    ax.legend(fontsize=5)
-mp=[];[(lambda y2,p2,nm:mp.append({'Modelo':nm,**met(y2,p2)}))(pr_r[~np.isnan(v)],v[~np.isnan(v)],MDL[km][1]) for km,v in preds_p.items() if (~np.isnan(v)).any()];mp.sort(key=lambda x:x['MAE'])
-fig,axes=plt.subplots(7,3,figsize=(26,40))
-fig.suptitle(f'{TOKEN} - Reporte Ensemble',fontsize=22,fontweight='bold',y=0.995)
-plt.subplots_adjust(hspace=0.35,wspace=0.3)
-# R0C0: Close price
-ax=axes[0,0];ax.plot(df['Close'].values,color='#1f77b4',lw=1);ax.set_title(f'Precio de Cierre - {TOKEN}',fontsize=10,fontweight='bold');ax.set_xlabel('Periodo',fontsize=8);ax.set_ylabel('USD',fontsize=8)
-# R0C1: Log returns
-ax=axes[0,1];ax.plot(lc.values,color='#1f77b4',lw=0.5);ax.set_title('Log Returns',fontsize=10,fontweight='bold');ax.set_xlabel('Periodo',fontsize=8);ax.set_ylabel('Log Return',fontsize=8)
-# R0C2: Normalized returns
-ax=axes[0,2];ax.plot(lc_n.values,color='#9467bd',lw=0.5);ax.set_title('Retornos Normalizados [0,1]',fontsize=10,fontweight='bold');ax.set_xlabel('Periodo',fontsize=8);ax.set_ylabel('Normalizado',fontsize=8)
-# R1C0: MIC bar
-ax=axes[1,0];ax.barh(di['Feature'],di['Score'],color='#1f77b4');ax.set_title('MIC Feature Importance (Top 15)',fontsize=10,fontweight='bold');ax.set_xlabel('MIC Score',fontsize=8);ax.tick_params(axis='y',labelsize=5)
-# R1C1: Walk-Forward
-ax=axes[1,1];fc=['#1f77b4','#ff7f0e','#2ca02c','#d62728','#9467bd']
-for fi,(ti,vi) in enumerate(sp.split(yt)):
-    ax.plot(yt.index[ti],yt.iloc[ti].values,color=fc[fi],lw=0.7,alpha=0.7)
-    ax.plot(yt.index[vi],yt.iloc[vi].values,color=fc[fi],lw=2,ls='--')
-ax.set_title('Walk-Forward CV (K=5)',fontsize=10,fontweight='bold')
-# R1C2: Predictions normalized
-ax=axes[1,2];_add_preds_ax(ax,idx,yv,preds);ax.set_title('Predicciones - Normalizado [0,1]',fontsize=10,fontweight='bold')
-# R2C0: Predictions log return
-ax=axes[2,0];_add_preds_ax(ax,idx,yt_log,preds_l);ax.set_title('Predicciones - Log Return',fontsize=10,fontweight='bold')
-# R2C1: Predictions price
-ax=axes[2,1];_add_preds_ax(ax,gi_v,pr_r,preds_p);ax.set_title('Predicciones - Precio (USD)',fontsize=10,fontweight='bold')
-# R2C2: Full series + overlay
-ax=axes[2,2];ax.plot(cp,color='#cccccc',lw=0.8,label='Close')
-for km,(cl,nm) in MDL.items():
-    v=preds_p[km];m=~np.isnan(v)
-    if m.any():ax.plot(gi_v[m],v[m],color=cl,lw=1.5,ls=':',label=nm)
-ax.set_title(f'Serie Completa + Predicciones - {TOKEN}',fontsize=10,fontweight='bold');ax.legend(fontsize=5)
-# R3C0: Zoom test
-zs,ze=max(0,int(gi_v.min())-50),min(len(cp),int(gi_v.max())+50)
-ax=axes[3,0];ax.plot(range(zs,ze),cp[zs:ze],color='black',lw=1.5,label='Close')
-for km,(cl,nm) in MDL.items():
-    v=preds_p[km];m=~np.isnan(v)
-    if m.any():ax.plot(gi_v[m],v[m],color=cl,lw=1,label=nm,marker='o',ms=2)
-ax.set_title('Zoom - Zona Test',fontsize=10,fontweight='bold');ax.legend(fontsize=5)
-# R3C1,R3C2,R4C0,R4C1,R4C2: Individual models (5 models now)
-pos=[(3,1),(3,2),(4,0),(4,1),(4,2)]
-for pi,km in enumerate(MDL):
-    cl,nm=MDL[km];r,c=pos[pi];ax=axes[r,c]
-    ax.plot(gi_v,pr_r,color='black',lw=1.5,label='Real')
-    v=preds_p[km];m=~np.isnan(v)
-    if m.any():ax.plot(gi_v[m],v[m],color=cl,lw=1.5,label=nm,marker='o',ms=2)
-    ax.set_title(f'{nm} vs Real (USD)',fontsize=10,fontweight='bold');ax.legend(fontsize=6)
-# R5C0: Meta LSTM weights (if available)
-ax=axes[5,0]
-if meta_model is not None and meta_results is not None:
-    wdf=get_average_weights(meta_results['weights'],meta_results['model_names'])
-    ax.barh(wdf['Modelo'],wdf['Peso_Promedio'],color=['#1f77b4','#2ca02c','#9467bd','#ff7f0e'][:len(wdf)])
-    ax.set_title('Pesos LSTM por Modelo Base',fontsize=10,fontweight='bold');ax.set_xlabel('Peso Promedio',fontsize=8);ax.tick_params(axis='y',labelsize=7)
-else:
-    ax.text(0.5,0.5,'Meta LSTM no disponible',ha='center',va='center',transform=ax.transAxes,fontsize=10);ax.set_title('Pesos LSTM',fontsize=10,fontweight='bold')
-# R5C1: Meta LSTM training curve
-ax=axes[5,1]
-if meta_model is not None and meta_results is not None:
-    ax.plot(meta_results['train_losses'],color='#1f77b4',lw=1,label='Train');ax.plot(meta_results['val_losses'],color='#ff7f0e',lw=1,label='Val')
-    ax.axvline(x=meta_results['best_epoch']-1,color='#d62728',ls='--',lw=1,label=f"Best ep={meta_results['best_epoch']}")
-    ax.set_title('LSTM Training Curve',fontsize=10,fontweight='bold');ax.set_xlabel('Epoch',fontsize=8);ax.set_ylabel('MSE Loss',fontsize=8);ax.legend(fontsize=6)
-else:
-    ax.text(0.5,0.5,'Meta LSTM no disponible',ha='center',va='center',transform=ax.transAxes,fontsize=10);ax.set_title('LSTM Training Curve',fontsize=10,fontweight='bold')
-# R5C2,R6C0,R6C1,R6C2: Metrics
-mpos=[(5,2),(6,0),(6,1),(6,2)];mcols=['#1f77b4','#2ca02c','#9467bd','#ff7f0e','#d62728']
-for mi,mn in enumerate(['MSE','RMSE','MAE','R2']):
-    r,c=mpos[mi];ax=axes[r,c]
-    ax.bar([x['Modelo'] for x in mp],[x[mn] for x in mp],color=mcols[:len(mp)])
-    ax.set_title('R²' if mn=='R2' else mn,fontsize=10,fontweight='bold');ax.tick_params(axis='x',labelsize=7,rotation=30)
-plt.tight_layout(rect=[0,0,1,0.98])
-out=os.path.join(os.path.dirname(__file__),'report.png')
-fig.savefig(out,dpi=200,bbox_inches='tight',facecolor='white')
-plt.close(fig);print(f'Listo: {out}')
-
 # ===== HTML REPORT =====
-print('Generando report.html...')
+print(f'[9/9] Generando report.html...')
+mp=[];[(lambda y2,p2,nm:mp.append({'Modelo':nm,**met(y2,p2)}))(pr_r[~np.isnan(v)],v[~np.isnan(v)],MDL[km][1]) for km,v in preds_p.items() if (~np.isnan(v)).any()];mp.sort(key=lambda x:x['MAE'])
+zs,ze=max(0,int(gi_v.min())-50),min(len(cp),int(gi_v.max())+50)
 from report_html import generate_html_report
 generate_html_report(TOKEN,cp,gi_v,pr_r,preds_p,mp,MDL,zs,ze,os.path.dirname(__file__))
+
