@@ -244,7 +244,17 @@ pmt_sota = np.full(len(ye), np.nan)
 start_idx = max(ws_meta_actual, ws_meta_ablation, ws_meta_sota) - 1
 
 if meta_model_actual is not None:
-    test_matrix_actual = np.column_stack([pl, pc, pt, pm]).astype(np.float32)
+    # Forward-fill + backfill NaN en predicciones base para evitar que MT sea todo NaN
+    def _ffill(arr):
+        a = arr.copy()
+        # Forward fill
+        for i in range(1, len(a)):
+            if np.isnan(a[i]): a[i] = a[i-1]
+        # Backfill para NaN iniciales (si el primer elemento era NaN)
+        for i in range(len(a) - 2, -1, -1):
+            if np.isnan(a[i]): a[i] = a[i+1]
+        return a
+    test_matrix_actual = np.column_stack([_ffill(pl), _ffill(pc), _ffill(pt), _ffill(pm)]).astype(np.float32)
     meta_model_actual.eval()
     with torch.no_grad():
         for i in range(start_idx, len(ye)):
@@ -329,8 +339,13 @@ mp.sort(key=lambda x: x['MAE'])
 
 zs, ze = max(0, int(gi_v.min()) - 50), min(len(cp), int(gi_v.max()) + 50)
 
+# Predicciones raw de meta-learners para métricas sobre LogReturn_MinMax
+meta_raw_preds = {'MT': pmt_actual, 'AB': pmt_ablation, 'SM': pmt_sota}
+# Predicciones raw de modelos base para gráficos LogReturn_MinMax
+base_raw_preds = {'LGB': pl, 'CB': pc, 'TX': pt, 'MO': pm, 'XG': px, 'BL': pb}
+
 import json
-def generate_compare_report(token, cp, gi_v, pr_r, preds_p, mp, MDL, zs, ze, out_dir):
+def generate_compare_report(token, cp, gi_v, pr_r, preds_p, mp, MDL, zs, ze, out_dir, ye_vals=None, meta_raw_preds=None, base_raw_preds=None):
     """Genera report_compare.html aislador para los Ensambles"""
     zoom_x = list(range(zs, ze))
     zoom_close = [float(v) for v in cp[zs:ze]]
@@ -342,17 +357,17 @@ def generate_compare_report(token, cp, gi_v, pr_r, preds_p, mp, MDL, zs, ze, out
         if m.any():
             zoom_models[km] = {'name': nm, 'x': [int(x) for x in gi_v[m]], 'y': [float(y) for y in v[m]], 'color': cl}
     
-    mp_c = []
     mp_metas = []
+    # Métricas USD de los Meta Learners (MT, AB, SM) para interpretabilidad
     for row in mp:
         r = dict(row)
         for km, (cl, nm) in MDL.items():
-            if nm == r['Modelo']: 
+            if nm == r['Modelo']:
                 r['Color'] = cl
                 if km in ['MT', 'AB', 'SM']:
                     mp_metas.append(r)
                 break
-        mp_c.append(r)
+    mp_metas.sort(key=lambda x: x['MAE'])
         
     html = f"""<!DOCTYPE html>
 <html lang="es">
@@ -420,11 +435,11 @@ def generate_compare_report(token, cp, gi_v, pr_r, preds_p, mp, MDL, zs, ze, out
         html += f'<tr><td><span class="model-badge" style="background:{m_["Color"]}">{m_["Modelo"]}</span></td><td>{_fmt(m_["MSE"], "MSE")}</td><td>{_fmt(m_["RMSE"], "RMSE")}</td><td>{_fmt(m_["MAE"], "MAE")}</td><td>{_fmt(m_["R2"], "R2")}</td></tr>\n'
         
     html += """    </tbody></table></div>
-  <div class="card"><h2>Regresion (Real vs Prediccion)</h2>
+  <div class="card"><h2>Prediccion sobre LogReturn_MinMax (Variable Objetivo)</h2>
     <div class="charts-grid">
-      <div id="reg-actual"></div>
-      <div id="reg-ablation"></div>
-      <div id="reg-sota"></div>
+      <div id="lr-actual"></div>
+      <div id="lr-ablation"></div>
+      <div id="lr-sota"></div>
     </div>
   </div>
   <div class="card"><h2>Comparacion Visual de Metricas</h2>
@@ -437,22 +452,41 @@ def generate_compare_report(token, cp, gi_v, pr_r, preds_p, mp, MDL, zs, ze, out
 </div>
 <script>
 """
-    reg_data = {}
-    for km in ['MT', 'AB', 'SM']:
-        v = preds_p[km]
-        m = ~np.isnan(v)
-        if m.any():
-            reg_data[km] = {
-                'x': [float(y) for y in pr_r[m]],
-                'y': [float(p) for p in v[m]],
-                'name': MDL[km][1],
-                'color': MDL[km][0]
-            }
+    # Datos de series temporales LogReturn_MinMax para cada meta-learner y modelos base
+    lr_data = {}
+    if ye_vals is not None and meta_raw_preds is not None:
+        lr_real = [float(v) for v in ye_vals]
+        lr_idx = list(range(len(ye_vals)))
+        for km in ['MT', 'AB', 'SM']:
+            p_raw = meta_raw_preds.get(km)
+            if p_raw is not None:
+                m_valid = ~np.isnan(p_raw)
+                if m_valid.any():
+                    lr_data[km] = {
+                        'idx': [int(i) for i in np.where(m_valid)[0]],
+                        'y': [float(p) for p in p_raw[m_valid]],
+                        'name': MDL[km][1],
+                        'color': MDL[km][0]
+                    }
+        # Agregar predicciones base (raw LogReturn_MinMax) para cada modelo
+        if base_raw_preds is not None:
+            for km in ['LGB', 'CB', 'TX', 'MO', 'XG', 'BL']:
+                p_raw = base_raw_preds.get(km)
+                if p_raw is not None:
+                    m_valid = ~np.isnan(p_raw)
+                    if m_valid.any():
+                        lr_data[km] = {
+                            'idx': [int(i) for i in np.where(m_valid)[0]],
+                            'y': [float(p) for p in p_raw[m_valid]],
+                            'name': MDL[km][1],
+                            'color': MDL[km][0]
+                        }
+        lr_data['_real'] = {'idx': lr_idx, 'y': lr_real}
 
     html += f"const zoomX={json.dumps(zoom_x)};\nconst zoomClose={json.dumps(zoom_close)};\n"
     html += f"const zoomModels={json.dumps(zoom_models)};\n"
-    html += f"const metricsData={json.dumps(mp_c)};\n"
-    html += f"const regData={json.dumps(reg_data)};\n"
+    html += f"const metricsData={json.dumps(mp_metas)};\n"
+    html += f"const lrData={json.dumps(lr_data)};\n"
     
     html += """const dL={paper_bgcolor:'rgba(0,0,0,0)',plot_bgcolor:'rgba(0,0,0,0)',font:{color:'#333',family:'Segoe UI,system-ui,sans-serif'},xaxis:{gridcolor:'#eee',linecolor:'#ccc'},yaxis:{gridcolor:'#eee',linecolor:'#ccc'},margin:{t:40,r:30,b:50,l:60},legend:{bgcolor:'rgba(0,0,0,0)',font:{size:11},orientation:'h',y:-0.2}};
 
@@ -480,22 +514,29 @@ drawChart('zoom-chart-actual', 'Precio Close vs Actual', ['LGB','CB','TX','MO','
 drawChart('zoom-chart-ablation', 'Precio Close vs Ours', ['LGB','CB','MO','AB'], 'AB');
 drawChart('zoom-chart-sota', 'Precio Close vs Yu et al. 2025', ['LGB','CB','XG','BL','SM'], 'SM');
 
-function drawReg(divId, titleTxt, key) {
-    if(!regData[key]) return;
-    const realVals = regData[key].x;
-    const predVals = regData[key].y;
-    const minVal = Math.min(...realVals, ...predVals);
-    const maxVal = Math.max(...realVals, ...predVals);
+function drawLR(divId, titleTxt, metaKey, baseKeys) {
+    if(!lrData['_real']) return;
+    const real = lrData['_real'];
     const data = [
-        {x: realVals, y: predVals, type: 'scatter', mode: 'markers', name: 'Valores', marker: {color: regData[key].color, size: 5, opacity: 0.65}},
-        {x: [minVal, maxVal], y: [minVal, maxVal], type: 'scatter', mode: 'lines', name: 'Ideal (y=x)', line: {color: '#555', dash: 'dash'}}
+        {x: real.idx, y: real.y, type:'scatter', mode:'lines', name:'Real (LogReturn_MinMax)', line:{color:'#000', width:2}}
     ];
-    Plotly.newPlot(divId, data, {...dL, title: {text: titleTxt, font: {size: 14, color: '#333'}}, xaxis: {...dL.xaxis, title: 'Valor Real (USD)'}, yaxis: {...dL.yaxis, title: 'Prediccion (USD)'}, hovermode: 'closest'}, {responsive: true});
+    // Agregar modelos base como lineas delgadas punteadas
+    baseKeys.forEach(bk => {
+        if(lrData[bk]) {
+            data.push({x: lrData[bk].idx, y: lrData[bk].y, type:'scatter', mode:'lines', name: lrData[bk].name, line:{color: lrData[bk].color, width:1.2, dash:'dot'}});
+        }
+    });
+    // Agregar meta-learner como linea gruesa
+    if(lrData[metaKey]) {
+        const pred = lrData[metaKey];
+        data.push({x: pred.idx, y: pred.y, type:'scatter', mode:'lines+markers', name: pred.name, line:{color: pred.color, width:2.5}, marker:{size:3, color: pred.color}});
+    }
+    Plotly.newPlot(divId, data, {...dL, title: {text: titleTxt, font: {size: 14, color: '#333'}}, xaxis: {...dL.xaxis, title: 'Indice Test'}, yaxis: {...dL.yaxis, title: 'LogReturn_MinMax'}, hovermode: 'x unified'}, {responsive: true});
 }
 
-drawReg('reg-actual', 'Regresion Ensamble Actual', 'MT');
-drawReg('reg-ablation', 'Regresion Ours (Sin TimeXer)', 'AB');
-drawReg('reg-sota', 'Regresion Yu et al. 2025', 'SM');
+drawLR('lr-actual', 'LogReturn_MinMax: Ensamble Actual', 'MT', ['LGB','CB','TX','MO']);
+drawLR('lr-ablation', 'LogReturn_MinMax: Ours (Sin TimeXer)', 'AB', ['LGB','CB','MO']);
+drawLR('lr-sota', 'LogReturn_MinMax: Yu et al. 2025', 'SM', ['LGB','CB','XG','BL']);
 
 ['MSE','RMSE','MAE','R2'].forEach((mn,i)=>{const ids=['chart-mse','chart-rmse','chart-mae','chart-r2'];const titles=['MSE','RMSE','MAE','R2'];
 Plotly.newPlot(ids[i],[{x:metricsData.map(m=>m.Modelo),y:metricsData.map(m=>m[mn]),type:'bar',marker:{color:metricsData.map(m=>m.Color),opacity:.85},text:metricsData.map(m=>m[mn].toFixed(4)),textposition:'outside',textfont:{color:'#333',size:11}}],{...dL,title:{text:titles[i],font:{size:14,color:'#333'}},xaxis:{...dL.xaxis,tickangle:45},showlegend:false,margin:{t:50,r:20,b:150,l:60}},{responsive:true,displayModeBar:false});});
@@ -504,4 +545,4 @@ Plotly.newPlot(ids[i],[{x:metricsData.map(m=>m.Modelo),y:metricsData.map(m=>m[mn
     with open(out_html, 'w', encoding='utf-8') as fh: fh.write(html)
     print(f'Listo Comparativa Limpia: {out_html}')
 
-generate_compare_report(TOKEN, cp, gi_v, pr_r, preds_p, mp, MDL, zs, ze, os.path.dirname(__file__))
+generate_compare_report(TOKEN, cp, gi_v, pr_r, preds_p, mp, MDL, zs, ze, os.path.dirname(__file__), ye_vals=yv, meta_raw_preds=meta_raw_preds, base_raw_preds=base_raw_preds)
