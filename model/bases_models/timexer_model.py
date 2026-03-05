@@ -17,7 +17,7 @@ class FlattenHead(nn.Module):
 class EnEmbedding(nn.Module):
     def __init__(self,n_vars,d_model,patch_len,dropout):
         super().__init__()
-        self.patch_len,self.value_embedding,self.glb_token=patch_len,nn.Linear(patch_len,d_model,bias=False),nn.Parameter(torch.randn(1,n_vars,1,d_model))
+        self.patch_len,self.value_embedding,self.glb_token=patch_len,nn.Linear(patch_len,d_model,bias=False),nn.Parameter(torch.randn(1,n_vars,1,d_model)*0.02)
         self.position_embedding,self.dropout=PositionalEmbedding(d_model),nn.Dropout(dropout)
     def forward(self,x):
         n_vars=x.shape[1];glb=self.glb_token.repeat((x.shape[0],1,1,1))
@@ -48,13 +48,19 @@ class EncoderLayer(nn.Module):
         self.dropout,self.activation=nn.Dropout(dropout),F.relu if activation=="relu"else F.gelu
     def forward(self,x,cross,x_mask=None,cross_mask=None,tau=None,delta=None):
         B,L,D=cross.shape
-        x=x+self.dropout(self.self_attention(x,x,x,attn_mask=x_mask,tau=tau,delta=None)[0])
-        x=self.norm1(x);x_glb_ori=x[:,-1,:].unsqueeze(1);x_glb=torch.reshape(x_glb_ori,(B,-1,D))
-        x_glb_attn=self.dropout(self.cross_attention(x_glb,cross,cross,attn_mask=cross_mask,tau=tau,delta=delta)[0])
+        # Pre-LN
+        nx = self.norm1(x)
+        x=x+self.dropout(self.self_attention(nx,nx,nx,attn_mask=x_mask,tau=tau,delta=None)[0])
+        
+        x_glb_ori=x[:,-1,:].unsqueeze(1);x_glb=torch.reshape(x_glb_ori,(B,-1,D))
+        nx_glb = self.norm2(x_glb)
+        x_glb_attn=self.dropout(self.cross_attention(nx_glb,cross,cross,attn_mask=cross_mask,tau=tau,delta=delta)[0])
         x_glb_attn=torch.reshape(x_glb_attn,(x_glb_attn.shape[0]*x_glb_attn.shape[1],x_glb_attn.shape[2])).unsqueeze(1)
-        x_glb=self.norm2(x_glb_ori+x_glb_attn);y=x=torch.cat([x[:,:-1,:],x_glb],dim=1)
-        y=self.dropout(self.activation(self.conv1(y.transpose(-1,1))))
-        return self.norm3(x+self.dropout(self.conv2(y).transpose(-1,1)))
+        
+        x_glb=x_glb_ori+x_glb_attn;y=x=torch.cat([x[:,:-1,:],x_glb],dim=1)
+        ny = self.norm3(y)
+        ny=self.dropout(self.activation(self.conv1(ny.transpose(-1,1))))
+        return x+self.dropout(self.conv2(ny).transpose(-1,1))
 
 class Model(nn.Module):
     def __init__(self,configs):
@@ -190,16 +196,22 @@ def objective_timexer_global(trial,X,y,splitter,device=None,seq_len=96,pred_len=
     fold_scores,fold_preds,fold_indices=[],[],[]
     for fold_num,(t_idx,v_idx)in enumerate(splitter.split(y)):
         ts,te=int(t_idx[0]),int(t_idx[-1])+1
-        if te-ts<seq_len+pred_len+10:continue
+        if te-ts<seq_len+pred_len+10:
+            print(f"Skipping fold {fold_num}: te-ts = {te-ts} < {seq_len+pred_len+10}")
+            continue
         train_data=full_data[ts:te]
         class TrainDataset(Dataset):
             def __init__(s,data,sl,pl):s.data,s.seq_len,s.pred_len,s.n_samples=data,sl,pl,len(data)-sl-pl+1
             def __len__(s):return max(0,s.n_samples)
             def __getitem__(s,i):return torch.from_numpy(s.data[i:i+s.seq_len].astype(np.float32)),torch.from_numpy(s.data[i+s.seq_len:i+s.seq_len+s.pred_len,-1].astype(np.float32))
         train_ds=TrainDataset(train_data,seq_len,pred_len)
-        if len(train_ds)<=0:continue
+        if len(train_ds)<=0:
+            print(f"Skipping fold {fold_num}: len(train_ds) <= 0")
+            continue
         train_loader=DataLoader(train_ds,batch_size=batch_size,shuffle=True,drop_last=True)
-        if len(train_loader)==0:continue
+        if len(train_loader)==0:
+            print(f"Skipping fold {fold_num}: len(train_loader) == 0 (batch_size={batch_size}, n_samples={len(train_ds)})")
+            continue
         model=build_model_from_trial(trial,enc_in=enc_in,seq_len=seq_len,pred_len=pred_len,device=device,features=features,pretrained_path=pretrained_path,freeze_backbone=freeze_backbone)
         criterion,optimizer=nn.L1Loss(),torch.optim.AdamW(filter(lambda p:p.requires_grad,model.parameters()),lr=lr,weight_decay=weight_decay)
         best_loss,pat_cnt=float("inf"),0
@@ -208,7 +220,9 @@ def objective_timexer_global(trial,X,y,splitter,device=None,seq_len=96,pred_len=
             for xb,yb in train_loader:
                 xb,yb=xb.to(device),yb.to(device);optimizer.zero_grad()
                 loss=criterion(model(xb,None,None,None).squeeze(-1),yb)
-                if torch.isnan(loss):return float("inf")
+                if torch.isnan(loss):
+                    print(f"Returning INF: Loss is NaN! xb shape: {xb.shape}")
+                    return float("inf")
                 loss.backward();nn.utils.clip_grad_norm_(model.parameters(),1.0);optimizer.step();losses.append(loss.item())
             ml=np.mean(losses)
             if ml<best_loss:best_loss,pat_cnt=ml,0
@@ -222,14 +236,20 @@ def objective_timexer_global(trial,X,y,splitter,device=None,seq_len=96,pred_len=
                 if ws<0 or we-ws!=seq_len:continue
                 xt=torch.from_numpy(full_data[ws:we].astype(np.float32)).unsqueeze(0).to(device)
                 vp.append(float(model(xt,None,None,None).squeeze(-1)[0,0].cpu().numpy()));vi.append(ti)
-        if not vp:continue
+        if not vp:
+            print(f"Skipping fold {fold_num}: vp is empty!")
+            continue
         vp,vi=np.array(vp),np.array(vi);vt=y_v[vi].flatten()
         fm=np.mean(np.abs(vp-vt))
-        if np.isnan(fm):continue
+        if np.isnan(fm):
+            print(f"Skipping fold {fold_num}: fm is NaN!")
+            continue
         fold_scores.append(fm);fold_preds.append(vp);fold_indices.append(vi)
         trial.report(fm,fold_num)
         if trial.should_prune():raise optuna.TrialPruned()
-    if not fold_scores:return float("inf")
+    if not fold_scores:
+        print("Returning INF: fold_scores is empty at the end!")
+        return float("inf")
     ms=float(np.mean(fold_scores))
     if oof_storage is not None and('best_score'not in oof_storage or ms<oof_storage['best_score']):
         oof_storage['best_score'],oof_storage['preds'],oof_storage['indices']=ms,fold_preds,fold_indices

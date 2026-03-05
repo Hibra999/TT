@@ -77,11 +77,18 @@ MDL = {
 
 # ===== CONFIG =====
 TOKEN = '^GSPC'
-N_LGB, N_CB = 5, 5
-N_TX, N_MO = 5, 5
-N_XG, N_BL = 5, 5
-N_MT, N_AB, N_SM = 5, 5, 5
-START, END = '2020-01-01', '2025-12-31'
+N_LGB, N_CB = 50, 50
+N_TX, N_MO = 50, 50
+N_XG, N_BL = 50, 50
+N_MT, N_AB, N_SM = 50, 50, 50
+
+from datetime import datetime
+train_start = '2020-01-01'
+train_end = '2024-12-31'
+test_start = '2025-01-01'
+test_end = datetime.today().strftime('%Y-%m-%d')
+
+START, END = train_start, test_end
 # ==================
 
 print(f'[1/11] Descargando datos...')
@@ -120,7 +127,14 @@ drop = [c for c in df_f.columns if df_f[c].max() - df_f[c].min() < 1e-8]
 df_f = df_f.drop(columns=drop).replace([np.inf, -np.inf], 0.0)
 lc_r = lc_r.replace([np.inf, -np.inf], 0.0)
 
-ts = int(len(df_f) * .9)
+# Dividir por fecha de inicio de test (2026-01-01) en lugar de un %.
+dates = pd.to_datetime(df['Date_final']).iloc[orig_idx_array].reset_index(drop=True)
+mask = dates >= pd.to_datetime(test_start)
+if mask.any():
+    ts = mask.idxmax()
+else:
+    ts = int(len(df_f) * .9)
+
 Xtr, Xte = df_f.iloc[:ts].copy(), df_f.iloc[ts:].copy()
 ytr, yte = lc_r.iloc[:ts].copy(), lc_r.iloc[ts:].copy()
 
@@ -400,13 +414,19 @@ def generate_compare_report(token, cp, gi_v, pr_r, preds_p, mp, MDL, zs, ze, out
     def _fmt(val, mn):
         if mn not in best_vals: return f'{val:.6f}'
         s = f'{val:.6f}'
-        return f'<strong>{s}</strong>' if val == best_vals[mn] else s
+        return s # Removed conditional highlighting
         
     for i, m_ in enumerate(mp_metas):
-        best = '<span class="best-badge">BEST</span>' if i == 0 else ''
-        html += f'<tr><td><span class="model-badge" style="background:{m_["Color"]}">{m_["Modelo"]}</span>{best}</td><td>{_fmt(m_["MSE"], "MSE")}</td><td>{_fmt(m_["RMSE"], "RMSE")}</td><td>{_fmt(m_["MAE"], "MAE")}</td><td>{_fmt(m_["R2"], "R2")}</td></tr>\n'
+        html += f'<tr><td><span class="model-badge" style="background:{m_["Color"]}">{m_["Modelo"]}</span></td><td>{_fmt(m_["MSE"], "MSE")}</td><td>{_fmt(m_["RMSE"], "RMSE")}</td><td>{_fmt(m_["MAE"], "MAE")}</td><td>{_fmt(m_["R2"], "R2")}</td></tr>\n'
         
     html += """    </tbody></table></div>
+  <div class="card"><h2>Regresion (Real vs Prediccion)</h2>
+    <div class="charts-grid">
+      <div id="reg-actual"></div>
+      <div id="reg-ablation"></div>
+      <div id="reg-sota"></div>
+    </div>
+  </div>
   <div class="card"><h2>Comparacion Visual de Metricas</h2>
     <div class="metrics-grid">
       <div id="chart-mse"></div><div id="chart-rmse"></div>
@@ -417,9 +437,22 @@ def generate_compare_report(token, cp, gi_v, pr_r, preds_p, mp, MDL, zs, ze, out
 </div>
 <script>
 """
+    reg_data = {}
+    for km in ['MT', 'AB', 'SM']:
+        v = preds_p[km]
+        m = ~np.isnan(v)
+        if m.any():
+            reg_data[km] = {
+                'x': [float(y) for y in pr_r[m]],
+                'y': [float(p) for p in v[m]],
+                'name': MDL[km][1],
+                'color': MDL[km][0]
+            }
+
     html += f"const zoomX={json.dumps(zoom_x)};\nconst zoomClose={json.dumps(zoom_close)};\n"
     html += f"const zoomModels={json.dumps(zoom_models)};\n"
-    html += f"const metricsData={json.dumps(mp_metas)};\n"
+    html += f"const metricsData={json.dumps(mp_c)};\n"
+    html += f"const regData={json.dumps(reg_data)};\n"
     
     html += """const dL={paper_bgcolor:'rgba(0,0,0,0)',plot_bgcolor:'rgba(0,0,0,0)',font:{color:'#333',family:'Segoe UI,system-ui,sans-serif'},xaxis:{gridcolor:'#eee',linecolor:'#ccc'},yaxis:{gridcolor:'#eee',linecolor:'#ccc'},margin:{t:40,r:30,b:50,l:60},legend:{bgcolor:'rgba(0,0,0,0)',font:{size:11},orientation:'h',y:-0.2}};
 
@@ -447,8 +480,25 @@ drawChart('zoom-chart-actual', 'Precio Close vs Actual', ['LGB','CB','TX','MO','
 drawChart('zoom-chart-ablation', 'Precio Close vs Ours', ['LGB','CB','MO','AB'], 'AB');
 drawChart('zoom-chart-sota', 'Precio Close vs Yu et al. 2025', ['LGB','CB','XG','BL','SM'], 'SM');
 
+function drawReg(divId, titleTxt, key) {
+    if(!regData[key]) return;
+    const realVals = regData[key].x;
+    const predVals = regData[key].y;
+    const minVal = Math.min(...realVals, ...predVals);
+    const maxVal = Math.max(...realVals, ...predVals);
+    const data = [
+        {x: realVals, y: predVals, type: 'scatter', mode: 'markers', name: 'Valores', marker: {color: regData[key].color, size: 5, opacity: 0.65}},
+        {x: [minVal, maxVal], y: [minVal, maxVal], type: 'scatter', mode: 'lines', name: 'Ideal (y=x)', line: {color: '#555', dash: 'dash'}}
+    ];
+    Plotly.newPlot(divId, data, {...dL, title: {text: titleTxt, font: {size: 14, color: '#333'}}, xaxis: {...dL.xaxis, title: 'Valor Real (USD)'}, yaxis: {...dL.yaxis, title: 'Prediccion (USD)'}, hovermode: 'closest'}, {responsive: true});
+}
+
+drawReg('reg-actual', 'Regresion Ensamble Actual', 'MT');
+drawReg('reg-ablation', 'Regresion Ours (Sin TimeXer)', 'AB');
+drawReg('reg-sota', 'Regresion Yu et al. 2025', 'SM');
+
 ['MSE','RMSE','MAE','R2'].forEach((mn,i)=>{const ids=['chart-mse','chart-rmse','chart-mae','chart-r2'];const titles=['MSE','RMSE','MAE','R2'];
-Plotly.newPlot(ids[i],[{x:metricsData.map(m=>m.Modelo),y:metricsData.map(m=>m[mn]),type:'bar',marker:{color:metricsData.map(m=>m.Color),opacity:.85},text:metricsData.map(m=>m[mn].toFixed(4)),textposition:'outside',textfont:{color:'#333',size:11}}],{...dL,title:{text:titles[i],font:{size:14,color:'#333'}},xaxis:{...dL.xaxis,tickangle:0},showlegend:false,margin:{t:50,r:20,b:60,l:60}},{responsive:true,displayModeBar:false});});
+Plotly.newPlot(ids[i],[{x:metricsData.map(m=>m.Modelo),y:metricsData.map(m=>m[mn]),type:'bar',marker:{color:metricsData.map(m=>m.Color),opacity:.85},text:metricsData.map(m=>m[mn].toFixed(4)),textposition:'outside',textfont:{color:'#333',size:11}}],{...dL,title:{text:titles[i],font:{size:14,color:'#333'}},xaxis:{...dL.xaxis,tickangle:45},showlegend:false,margin:{t:50,r:20,b:150,l:60}},{responsive:true,displayModeBar:false});});
 </script></body></html>"""
     out_html = os.path.join(out_dir, 'report_compare.html')
     with open(out_html, 'w', encoding='utf-8') as fh: fh.write(html)
