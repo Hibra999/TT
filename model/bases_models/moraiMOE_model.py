@@ -56,39 +56,60 @@ def objective_moirai_moe_global(trial,X,y,splitter,device=None,pred_len=30,model
     n_samples=trial.suggest_int('num_samples',50,200,step=25)
     bs=trial.suggest_categorical('batch_size',[16,32,64])
     try:
-        fold_scores,fold_preds,fold_indices=[],[],[]
-        for fold_num,(t_idx,v_idx)in enumerate(splitter.split(y_arr)):
-            y_tr,y_vl=y_arr[t_idx],y_arr[v_idx]
-            eff_ctx=min(ctx_len,len(y_tr)-1)
-            if eff_ctx<32:continue
-            wrapper=None
+        fold_scores, fold_preds, fold_indices = [], [], []
+        for fold_num, (t_idx, v_idx) in enumerate(splitter.split(y_arr)):
+            y_tr, y_vl = y_arr[t_idx], y_arr[v_idx]
+            eff_ctx = min(ctx_len, len(y_tr) - 1)
+            if eff_ctx < 32: continue
+            
+            wrapper = None
             try:
-                wrapper=MoiraiMoEWrapper(model_size=model_size,prediction_length=1,context_length=eff_ctx,patch_size=patch_sz,num_samples=n_samples,batch_size=bs,use_cache=True)
-                full_s=np.concatenate([y_tr,y_vl]);vp,vi_list=[],[]
-                for i,ti in enumerate(v_idx):
-                    loc_ti=len(y_tr)+i;cs,ce=max(0,loc_ti-eff_ctx),loc_ti
-                    if ce<=cs:continue
-                    ctx_data=full_s[cs:ce]
-                    if len(ctx_data)<10:continue
-                    try:
-                        ds=prepare_simple_dataset(ctx_data,freq=freq)
-                        fc=list(wrapper.predictor.predict(ds))
-                        if fc:vp.append(float(np.median(fc[0].samples)));vi_list.append(int(ti))
-                    except:continue
-                if not vp:continue
-                vp,vi_arr=np.array(vp),np.array(vi_list)
-                mae=mean_absolute_error(y_arr[vi_arr],vp)
-                fold_scores.append(mae);fold_preds.append(vp);fold_indices.append(vi_arr)
-            except:import traceback;traceback.print_exc();continue
+                wrapper = MoiraiMoEWrapper(model_size=model_size, prediction_length=1, context_length=eff_ctx, patch_size=patch_sz, num_samples=n_samples, batch_size=bs, use_cache=True)
+                full_s = np.concatenate([y_tr, y_vl])
+                
+                # BATCH PROCESSING OPTIMIZATION 
+                valid_indices, valid_contexts = [], []
+                for i, ti in enumerate(v_idx):
+                    loc_ti = len(y_tr) + i
+                    cs, ce = max(0, loc_ti - eff_ctx), loc_ti
+                    if ce > cs and ce - cs >= 10:
+                        valid_contexts.append(full_s[cs:ce])
+                        valid_indices.append(int(ti))
+                
+                if not valid_contexts: continue
+                
+                # Build one single multi-series dataframe for the dataset (all contexts as separate ids)
+                df_all = pd.DataFrame()
+                for i, ctx in enumerate(valid_contexts):
+                    df_all = pd.concat([df_all, pd.DataFrame({'target': ctx, 'item_id': i}, index=pd.date_range(start='2020-01-01', periods=len(ctx), freq=freq))])
+                
+                ds = PandasDataset.from_long_dataframe(df_all, item_id="item_id", target="target", freq=freq)
+                forecasts = list(wrapper.predictor.predict(ds))
+                
+                if forecasts:
+                    vp = np.array([float(np.median(f.samples)) for f in forecasts])
+                    vi_arr = np.array(valid_indices)
+                    mae = mean_absolute_error(y_arr[vi_arr], vp)
+                    fold_scores.append(mae)
+                    fold_preds.append(vp)
+                    fold_indices.append(vi_arr)
+                    
+            except Exception as e:
+                import traceback; traceback.print_exc()
+                continue
             finally:
-                if wrapper:del wrapper.model,wrapper.predictor,wrapper
-                torch.cuda.empty_cache();gc.collect()
-        if not fold_scores:return float('inf')
-        ms=np.mean(fold_scores)
-        if oof_storage is not None and('best_score'not in oof_storage or ms<oof_storage['best_score']):
-            oof_storage['best_score'],oof_storage['preds'],oof_storage['indices']=ms,fold_preds,fold_indices
+                if wrapper: del wrapper.model, wrapper.predictor, wrapper
+                torch.cuda.empty_cache(); gc.collect()
+                
+        if not fold_scores: return float('inf')
+        ms = np.mean(fold_scores)
+        if oof_storage is not None and ('best_score' not in oof_storage or ms < oof_storage['best_score']):
+            oof_storage['best_score'], oof_storage['preds'], oof_storage['indices'] = ms, fold_preds, fold_indices
         return ms
-    except:import traceback;traceback.print_exc();torch.cuda.empty_cache();gc.collect();return float('inf')
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        torch.cuda.empty_cache(); gc.collect()
+        return float('inf')
 
 def preload_moirai_module(model_size:str='large'):
     print(f"Precargando modulo Moirai-MoE ({model_size})...");m=get_cached_module(model_size);print("Modulo precargado exitosamente!");return m
@@ -128,26 +149,20 @@ def train_final_and_predict_test(y_train, y_test, best_params, model_size='small
         ctx_start = max(0, global_idx - ctx_len)
         ctx_end = global_idx
         
-        if ctx_end <= ctx_start:
-            continue
-        
-        ctx_data = full_series[ctx_start:ctx_end]
-        
-        if len(ctx_data) < 10:
-            continue
-        
-        try:
-            ds = prepare_simple_dataset(ctx_data, freq=freq)
-            fc = list(wrapper.predictor.predict(ds))
-            if fc:
-                pred = float(np.median(fc[0].samples))
-                predictions.append(pred)
-                test_indices.append(i)
-                
-                # Escribir predicción en full_series para que contextos futuros la usen
-                full_series[global_idx] = pred
-        except:
-            continue
+        if ctx_end > ctx_start and (ctx_end - ctx_start) >= 10:
+            try:
+                # Para test recursivo aún tenemos que hacerlo punto por punto
+                # ya que futuras predicciones dependen del punto anterior (t+1 depende de t-hat).
+                # Pero evitamos re-crear wrapper ni vaciar caché innecesariamente dentro de cada step
+                ds = prepare_simple_dataset(full_series[ctx_start:ctx_end], freq=freq)
+                fc = list(wrapper.predictor.predict(ds))
+                if fc:
+                    pred = float(np.median(fc[0].samples))
+                    predictions.append(pred)
+                    test_indices.append(i)
+                    full_series[global_idx] = pred
+            except Exception as e:
+                pass
     
     # Limpiar
     del wrapper.model, wrapper.predictor, wrapper
