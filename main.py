@@ -255,27 +255,59 @@ with tab5:
         st.metric("Moirai Trials",n_trials_moirai)
     with col5:
         st.metric("Meta LSTM Trials",n_trials_lstm)
-    if st.button("Iniciar Entrenamiento de Modelos",type="primary",use_container_width=True):
+        
+    st.subheader("Configuracion de Ventanas por Modelo (Window Ratios)")
+    col_wr1, col_wr2, col_wr3, col_wr4 = st.columns(4)
+    with col_wr1:
+        wr_lgb = st.select_slider("WR LightGBM", options=[0.3,0.4,0.5,0.6,0.7], value=wr_selected)
+    with col_wr2:
+        wr_cb = st.select_slider("WR CatBoost", options=[0.3,0.4,0.5,0.6,0.7], value=wr_selected)
+    with col_wr3:
+        wr_tx = st.select_slider("WR TimeXer", options=[0.3,0.4,0.5,0.6,0.7], value=wr_selected)
+    with col_wr4:
+        wr_moirai = st.select_slider("WR Moirai", options=[0.3,0.4,0.5,0.6,0.7], value=wr_selected)
+        
+    def calcular_metricas(y_true,y_pred):
+        mse=mean_squared_error(y_true,y_pred)
+        rmse=np.sqrt(mse)
+        mae=mean_absolute_error(y_true,y_pred)
+        r2=r2_score(y_true,y_pred)
+        return mse,rmse,mae,r2
+        
+    col_btn1, col_btn2 = st.columns(2)
+    
+    with col_btn1:
+        btn_train_normal = st.button("Iniciar Entrenamiento de Modelos Normal",type="primary",use_container_width=True)
+    with col_btn2:
+        btn_train_sensibility = st.button("Experimento: Sensibilidad Multi-Ventana",type="secondary",use_container_width=True)
+        
+    if btn_train_normal:
         oof_lgb,oof_cb,oof_tx,oof_moirai={},{},{},{}
+        # Creacion de los splitters individuales por modelo:
+        splitter_lgb = wfrw(y_train, k=k_selected, fh_val=fh_selected, window_ratio=wr_lgb)
+        splitter_cb = wfrw(y_train, k=k_selected, fh_val=fh_selected, window_ratio=wr_cb)
+        splitter_tx = wfrw(y_train, k=k_selected, fh_val=fh_selected, window_ratio=wr_tx)
+        splitter_moirai = wfrw(y_train, k=k_selected, fh_val=fh_selected, window_ratio=wr_moirai)
+        
         st.subheader("Fase 1: Optimizacion de Hiperparametros (solo con train)")
         st.write("Optimizando LightGBM...")
         with st.spinner('Optimizando LGB'):
             study_lgb=optuna.create_study(direction="minimize")
-            study_lgb.optimize(lambda trial:objective_global(trial,X_train,y_train,splitter,oof_storage=oof_lgb),n_trials=n_trials_lgb,n_jobs=-1)
+            study_lgb.optimize(lambda trial:objective_global(trial,X_train,y_train,splitter_lgb,oof_storage=oof_lgb),n_trials=n_trials_lgb,n_jobs=-1)
             best_params_lgb=study_lgb.best_params
             st.json(best_params_lgb)
             st.write(f"Mejor MAE LGB: {study_lgb.best_value:.4f}")
         st.write("Optimizando CatBoost...")
         with st.spinner('Optimizando CatBoost'):
             study_cb=optuna.create_study(direction="minimize")
-            study_cb.optimize(lambda trial:objective_catboost_global(trial,X_train,y_train,splitter,oof_storage=oof_cb),n_trials=n_trials_cb,n_jobs=-1)
+            study_cb.optimize(lambda trial:objective_catboost_global(trial,X_train,y_train,splitter_cb,oof_storage=oof_cb),n_trials=n_trials_cb,n_jobs=-1)
             best_params_cb=study_cb.best_params
             st.json(best_params_cb)
             st.write(f"Mejor MAE CatBoost: {study_cb.best_value:.4f}")
         st.write("Optimizando TimeXer...")
         with st.spinner('Optimizando TimeXer'):
             study_tx=optuna.create_study(direction="minimize")
-            study_tx.optimize(lambda trial:objective_timexer_global(trial,X_train,y_train,splitter,device=device,seq_len=96,pred_len=fh_selected,features='MS',oof_storage=oof_tx),n_trials=n_trials_tx,n_jobs=1)
+            study_tx.optimize(lambda trial:objective_timexer_global(trial,X_train,y_train,splitter_tx,device=device,seq_len=96,pred_len=fh_selected,features='MS',oof_storage=oof_tx),n_trials=n_trials_tx,n_jobs=1)
             best_params_tx=study_tx.best_params
             st.json(best_params_tx)
             st.write(f"Mejor MAE TimeXer: {study_tx.best_value:.4f}")
@@ -283,7 +315,7 @@ with tab5:
         with st.spinner('Optimizando Moirai-MoE'):
             preload_moirai_module(model_size='small')
             study_moirai=optuna.create_study(direction="minimize")
-            study_moirai.optimize(lambda trial:objective_moirai_moe_global(trial,X_train,y_train,splitter,device=device,pred_len=fh_selected,model_size='small',freq='D',use_full_train=True,oof_storage=oof_moirai),n_trials=n_trials_moirai,n_jobs=1)
+            study_moirai.optimize(lambda trial:objective_moirai_moe_global(trial,X_train,y_train,splitter_moirai,device=device,pred_len=fh_selected,model_size='small',freq='D',use_full_train=True,oof_storage=oof_moirai),n_trials=n_trials_moirai,n_jobs=1)
             best_params_moirai=study_moirai.best_params
             st.json(best_params_moirai)
             st.write(f"Mejor MAE Moirai: {study_moirai.best_value:.4f}")
@@ -451,12 +483,6 @@ with tab5:
             st.subheader("Metricas sobre Precio Real (Escala Original)")
             precio_real_arr=np.array(precio_real)
             precio_meta_arr=np.array(precio_meta)
-            def calcular_metricas(y_true,y_pred):
-                mse=mean_squared_error(y_true,y_pred)
-                rmse=np.sqrt(mse)
-                mae=mean_absolute_error(y_true,y_pred)
-                r2=r2_score(y_true,y_pred)
-                return mse,rmse,mae,r2
             metricas_lista=[]
             mse_meta,rmse_meta,mae_meta,r2_meta=calcular_metricas(precio_real_arr,precio_meta_arr)
             metricas_lista.append({'Modelo':'Meta LSTM','MSE':mse_meta,'RMSE':rmse_meta,'MAE':mae_meta,'R2':r2_meta})
@@ -505,3 +531,145 @@ with tab5:
         else:
             st.error("No hay suficientes datos para entrenar el meta-modelo. Se requieren al menos 20 muestras validas.")
             st.write("Intenta con mas trials o ajusta los parametros de los modelos base.")
+
+    if btn_train_sensibility:
+        st.subheader("Ejecutando Sensibilidad Multi-Ventana")
+        window_ratios_to_test = [0.3, 0.4, 0.5, 0.6, 0.7]
+        all_metrics = []
+        
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        # Reducimos loss trials a algo mínimo si no estamos esperando 1 hora
+        sensibility_lgb_trials = min(n_trials_lgb, 3)
+        sensibility_cb_trials = min(n_trials_cb, 3)
+        sensibility_tx_trials = min(n_trials_tx, 1) # TX y Moirai son lentos, usar 1 trial!
+        sensibility_moirai_trials = min(n_trials_moirai, 1)
+        sensibility_lstm_trials = min(n_trials_lstm, 1)
+        
+        total_steps = len(window_ratios_to_test)
+        
+        for idx, temp_wr in enumerate(window_ratios_to_test):
+            status_text.text(f"Evaluando Window Ratio: {temp_wr} ({idx+1}/{total_steps})")
+            
+            oof_lgb, oof_cb, oof_tx, oof_moirai = {}, {}, {}, {}
+            splitter_temp = wfrw(y_train, k=k_selected, fh_val=fh_selected, window_ratio=temp_wr)
+            
+            # Entrenamiento rápido por modelo con el temp_wr global (para este run)
+            study_lgb=optuna.create_study(direction="minimize")
+            study_lgb.optimize(lambda trial:objective_global(trial,X_train,y_train,splitter_temp,oof_storage=oof_lgb),n_trials=sensibility_lgb_trials,n_jobs=-1)
+            
+            study_cb=optuna.create_study(direction="minimize")
+            study_cb.optimize(lambda trial:objective_catboost_global(trial,X_train,y_train,splitter_temp,oof_storage=oof_cb),n_trials=sensibility_cb_trials,n_jobs=-1)
+            
+            study_tx=optuna.create_study(direction="minimize")
+            study_tx.optimize(lambda trial:objective_timexer_global(trial,X_train,y_train,splitter_temp,device=device,seq_len=96,pred_len=fh_selected,features='MS',oof_storage=oof_tx),n_trials=sensibility_tx_trials,n_jobs=1)
+            
+            preload_moirai_module(model_size='small')
+            study_moirai=optuna.create_study(direction="minimize")
+            study_moirai.optimize(lambda trial:objective_moirai_moe_global(trial,X_train,y_train,splitter_temp,device=device,pred_len=fh_selected,model_size='small',freq='D',use_full_train=True,oof_storage=oof_moirai),n_trials=sensibility_moirai_trials,n_jobs=1)
+            
+            # Recoleccion OOF y escalado
+            preds_lgb, idx_lgb = collect_oof_predictions(oof_lgb)
+            preds_cb, idx_cb = collect_oof_predictions(oof_cb)
+            preds_tx, idx_tx = collect_oof_predictions(oof_tx)
+            preds_moirai, idx_moirai, _ = collect_oof_predictions(oof_moirai)
+            
+            oof_df_temp = build_oof_dataframe(oof_lgb, oof_cb, oof_tx, oof_moirai, y_train)
+            
+            if len(oof_df_temp) < 20:
+                st.warning(f"Window ratio {temp_wr} no generó suficientes filas OOF ({len(oof_df_temp)}). Omitiendo.")
+                progress_bar.progress((idx + 1) / total_steps)
+                continue
+                
+            # Entrenando LSTM meta-modelo en este run
+            meta_model, mae_meta, results, _, _ = optimize_lstm_meta(oof_df_temp, device, n_trials=sensibility_lstm_trials)
+            
+            # Calculo de Reversion y MAE para este wr
+            valid_indices=results['valid_indices']
+            targets_scaled=np.array(results['targets']).reshape(-1,1)
+            targets_log=scaler_target.inverse_transform(targets_scaled).flatten()
+            
+            close_prices=df['Close'].values
+            
+            # Identificar columnas
+            def _get_col(df_temp, keywords):
+                for col in df_temp.columns:
+                    col_lower = col.lower()
+                    if any(kw in col_lower for kw in keywords):
+                        return col
+                return None
+            
+            c_lgb = _get_col(oof_df_temp, ['lgb', 'light'])
+            c_cb = _get_col(oof_df_temp, ['cb', 'catboost'])
+            c_tx = _get_col(oof_df_temp, ['tx', 'timex'])
+            c_moi = _get_col(oof_df_temp, ['moirai', 'moe'])
+            
+            # Generar arrays de precios reales y predichos
+            precio_real, precio_lgb, precio_cb, precio_tx, precio_moi, precio_meta = [], [], [], [], [], []
+            predictions_log=scaler_target.inverse_transform(np.array(results['predictions']).reshape(-1,1)).flatten()
+            
+            lgb_log = scaler_target.inverse_transform(oof_df_temp.loc[valid_indices, c_lgb].values.reshape(-1,1)).flatten() if c_lgb else None
+            cb_log = scaler_target.inverse_transform(oof_df_temp.loc[valid_indices, c_cb].values.reshape(-1,1)).flatten() if c_cb else None
+            tx_log = scaler_target.inverse_transform(oof_df_temp.loc[valid_indices, c_tx].values.reshape(-1,1)).flatten() if c_tx else None
+            moi_log = scaler_target.inverse_transform(oof_df_temp.loc[valid_indices, c_moi].values.reshape(-1,1)).flatten() if c_moi else None
+            
+            for i,vidx in enumerate(valid_indices):
+                if vidx>0 and vidx<len(close_prices):
+                    precio_anterior = close_prices[vidx-1]
+                    precio_real.append(precio_anterior * np.exp(targets_log[i]))
+                    precio_meta.append(precio_anterior * np.exp(predictions_log[i]))
+                    if lgb_log is not None: precio_lgb.append(precio_anterior * np.exp(lgb_log[i]))
+                    if cb_log is not None: precio_cb.append(precio_anterior * np.exp(cb_log[i]))
+                    if tx_log is not None: precio_tx.append(precio_anterior * np.exp(tx_log[i]))
+                    if moi_log is not None: precio_moi.append(precio_anterior * np.exp(moi_log[i]))
+
+            pr_arr = np.array(precio_real)
+            
+            if len(pr_arr) > 0:
+                mse_m, rmse_m, mae_m, r2_m = calcular_metricas(pr_arr, np.array(precio_meta))
+                all_metrics.append({'Window_Ratio': temp_wr, 'Modelo': 'Meta LSTM', 'MSE': mse_m, 'RMSE': rmse_m, 'MAE': mae_m, 'R2': r2_m})
+                
+                if precio_lgb:
+                    mse_l, rmse_l, mae_l, r2_l = calcular_metricas(pr_arr, np.array(precio_lgb))
+                    all_metrics.append({'Window_Ratio': temp_wr, 'Modelo': 'LightGBM', 'MSE': mse_l, 'RMSE': rmse_l, 'MAE': mae_l, 'R2': r2_l})
+                if precio_cb:
+                    mse_c, rmse_c, mae_c, r2_c = calcular_metricas(pr_arr, np.array(precio_cb))
+                    all_metrics.append({'Window_Ratio': temp_wr, 'Modelo': 'CatBoost', 'MSE': mse_c, 'RMSE': rmse_c, 'MAE': mae_c, 'R2': r2_c})
+                if precio_tx:
+                    mse_t, rmse_t, mae_t, r2_t = calcular_metricas(pr_arr, np.array(precio_tx))
+                    all_metrics.append({'Window_Ratio': temp_wr, 'Modelo': 'TimeXer', 'MSE': mse_t, 'RMSE': rmse_t, 'MAE': mae_t, 'R2': r2_t})
+                if precio_moi:
+                    mse_mo, rmse_mo, mae_mo, r2_mo = calcular_metricas(pr_arr, np.array(precio_moi))
+                    all_metrics.append({'Window_Ratio': temp_wr, 'Modelo': 'Moirai-MoE', 'MSE': mse_mo, 'RMSE': rmse_mo, 'MAE': mae_mo, 'R2': r2_mo})
+            
+            progress_bar.progress((idx + 1) / total_steps)
+            
+        status_text.text("Análisis de Sensibilidad Completado!")
+        
+        if all_metrics:
+            df_sens = pd.DataFrame(all_metrics)
+            
+            st.subheader("Resultados del Análisis Multi-Ventana")
+            st.dataframe(df_sens, use_container_width=True)
+            
+            fig_sens = px.line(df_sens, x='Window_Ratio', y='MAE', color='Modelo', markers=True, 
+                               title="Evolución del MAE por Modelo vs Tamaño de Ventana (Window Ratio)")
+            
+            fig_sens.update_layout(
+                template='plotly_white',
+                xaxis_title="Window Ratio",
+                yaxis_title="Mean Absolute Error (Escala Original)",
+                height=500,
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5)
+            )
+            fig_sens.update_xaxes(showgrid=True, gridcolor='rgba(128,128,128,0.2)')
+            fig_sens.update_yaxes(showgrid=True, gridcolor='rgba(128,128,128,0.2)')
+            st.plotly_chart(fig_sens, use_container_width=True)
+            
+            # Encontrar la mejor configuración (menor MAE) general
+            mejor_fila = df_sens.loc[df_sens['MAE'].idxmin()]
+            st.success(f"La MEJOR configuración se logró con el modelo **{mejor_fila['Modelo']}** "
+                       f"usando un Window Ratio de **{mejor_fila['Window_Ratio']}** (MAE: {mejor_fila['MAE']:.4f})")
+        else:
+            st.warning("No se pudieron recolectar métricas válidas durante el experimento.")
