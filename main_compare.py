@@ -77,15 +77,15 @@ MDL = {
 
 # ===== CONFIG =====
 TOKEN = '^GSPC'
-N_LGB, N_CB = 50, 50
-N_TX, N_MO = 50, 50
-N_XG, N_BL = 50, 50
-N_MT, N_AB, N_SM = 50, 50, 50
+N_LGB, N_CB = 100, 100
+N_TX, N_MO = 100, 100
+N_XG, N_BL = 100, 100
+N_MT, N_AB, N_SM = 100, 100, 100
 
 from datetime import datetime
 train_start = '2020-01-01'
-train_end = '2024-12-31'
-test_start = '2025-01-01'
+train_end = '2025-12-31'
+test_start = '2026-01-01'
 test_end = datetime.today().strftime('%Y-%m-%d')
 
 START, END = train_start, test_end
@@ -172,7 +172,7 @@ bp_c = oof_c.get('params', sc_.best_params)
 oof_t, oof_m = {}, {}
 print('  --- Base Models Ensamble Actual ---')
 print('  > TimeXer...')
-st_ = optuna.create_study(direction='minimize')
+st_ = optuna.create_study(direction='minimize', pruner=optuna.pruners.PercentilePruner(percentile=75.0, n_warmup_steps=2))
 st_.optimize(lambda t: objective_timexer_global(t, Xt, yt, sp, device=device, seq_len=96, pred_len=30, features='MS', oof_storage=oof_t), n_trials=N_TX, n_jobs=1)
 bp_t = st_.best_params
 
@@ -244,17 +244,8 @@ pmt_sota = np.full(len(ye), np.nan)
 start_idx = max(ws_meta_actual, ws_meta_ablation, ws_meta_sota) - 1
 
 if meta_model_actual is not None:
-    # Forward-fill + backfill NaN en predicciones base para evitar que MT sea todo NaN
-    def _ffill(arr):
-        a = arr.copy()
-        # Forward fill
-        for i in range(1, len(a)):
-            if np.isnan(a[i]): a[i] = a[i-1]
-        # Backfill para NaN iniciales (si el primer elemento era NaN)
-        for i in range(len(a) - 2, -1, -1):
-            if np.isnan(a[i]): a[i] = a[i+1]
-        return a
-    test_matrix_actual = np.column_stack([_ffill(pl), _ffill(pc), _ffill(pt), _ffill(pm)]).astype(np.float32)
+    # Sin _ffill: usar predicciones raw para evitar datos artificiales
+    test_matrix_actual = np.column_stack([pl, pc, pt, pm]).astype(np.float32)
     meta_model_actual.eval()
     with torch.no_grad():
         for i in range(start_idx, len(ye)):
@@ -306,6 +297,15 @@ gi_v = test_orig_indices[val] + 1
 prev = prev[val]
 
 pr_r = _recon(yt_log[val], prev, int(val.sum()))
+
+# Verificación: confirmar que métricas están en escala USD
+gi_check = gi_v[gi_v < len(cp)]
+if len(gi_check) > 0:
+    real_close = cp[gi_check]
+    recon_close = pr_r[:len(gi_check)]
+    err = np.mean(np.abs(real_close - recon_close))
+    print(f'  [VERIFY] Reconstrucción USD - Error medio vs Close real: {err:.4f}')
+    print(f'  [VERIFY] Rango precio real: [{np.nanmin(pr_r):.2f}, {np.nanmax(pr_r):.2f}] USD')
 
 def safe_inv_recon(p_raw):
     p_log = np.full_like(p_raw, np.nan)
