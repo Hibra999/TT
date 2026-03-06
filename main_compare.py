@@ -98,11 +98,11 @@ def main():
         tdf=tdf.dropna().reset_index(drop=True)
         if len(tdf)<5: continue
         
-        # Predict Meta-LSTM in Test
+        # Predict Meta-LSTM in Test (only if all base model columns present)
         m_cols=[c for c in tdf.columns if c not in ['idx','target']]
-        if mdl and len(tdf)>0:
-            oof_mat=odf[m_cols].values
-            tt_mat=tdf[m_cols].values
+        if mdl and len(tdf)>0 and set(oof_m_cols)==set(m_cols):
+            oof_mat=odf[oof_m_cols].values
+            tt_mat=tdf[oof_m_cols].values
             comp_mat=np.vstack([oof_mat[-(ws-1):],tt_mat]) if ws>1 and len(oof_mat)>=(ws-1) else tt_mat
             
             p_meta=[]
