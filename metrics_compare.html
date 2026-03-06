@@ -1,0 +1,273 @@
+
+        <html>
+        <head>
+            <meta charset="utf-8">
+            <title>Reporte Experimental de Ventanas</title>
+        </head>
+        <body style="font-family: Arial, sans-serif; background-color: #f6f1e9; padding: 20px;">
+            <h2 style="text-align: center; color: #2c3e50;">Resultados del Análisis Multi-Ventana</h2>
+            <style type="text/css">
+#T_91db2 th {
+  background-color: #4CAF50;
+  color: white;
+  font-family: Arial;
+}
+#T_91db2 td {
+  font-family: Arial;
+  border: 1px solid #ddd;
+  padding: 8px;
+}
+#T_91db2 table {
+  border-collapse: collapse;
+  width: 80%;
+  margin: 20px auto;
+}
+#T_91db2_row16_col2, #T_91db2_row16_col3, #T_91db2_row16_col5, #T_91db2_row17_col4 {
+  background-color: lightgreen;
+}
+</style>
+<table id="T_91db2">
+  <caption>Sensibilidad Multi-Ventana de Modelos Base y Meta-LSTM</caption>
+  <thead>
+    <tr>
+      <th class="blank level0" >&nbsp;</th>
+      <th id="T_91db2_level0_col0" class="col_heading level0 col0" >Window_Ratio</th>
+      <th id="T_91db2_level0_col1" class="col_heading level0 col1" >Modelo</th>
+      <th id="T_91db2_level0_col2" class="col_heading level0 col2" >MSE</th>
+      <th id="T_91db2_level0_col3" class="col_heading level0 col3" >RMSE</th>
+      <th id="T_91db2_level0_col4" class="col_heading level0 col4" >MAE</th>
+      <th id="T_91db2_level0_col5" class="col_heading level0 col5" >R2</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th id="T_91db2_level0_row0" class="row_heading level0 row0" >0</th>
+      <td id="T_91db2_row0_col0" class="data row0 col0" >0.300000</td>
+      <td id="T_91db2_row0_col1" class="data row0 col1" >Meta LSTM</td>
+      <td id="T_91db2_row0_col2" class="data row0 col2" >1.281449</td>
+      <td id="T_91db2_row0_col3" class="data row0 col3" >1.132011</td>
+      <td id="T_91db2_row0_col4" class="data row0 col4" >0.841218</td>
+      <td id="T_91db2_row0_col5" class="data row0 col5" >0.989551</td>
+    </tr>
+    <tr>
+      <th id="T_91db2_level0_row1" class="row_heading level0 row1" >1</th>
+      <td id="T_91db2_row1_col0" class="data row1 col0" >0.300000</td>
+      <td id="T_91db2_row1_col1" class="data row1 col1" >LightGBM</td>
+      <td id="T_91db2_row1_col2" class="data row1 col2" >0.976486</td>
+      <td id="T_91db2_row1_col3" class="data row1 col3" >0.988173</td>
+      <td id="T_91db2_row1_col4" class="data row1 col4" >0.704410</td>
+      <td id="T_91db2_row1_col5" class="data row1 col5" >0.992038</td>
+    </tr>
+    <tr>
+      <th id="T_91db2_level0_row2" class="row_heading level0 row2" >2</th>
+      <td id="T_91db2_row2_col0" class="data row2 col0" >0.300000</td>
+      <td id="T_91db2_row2_col1" class="data row2 col1" >CatBoost</td>
+      <td id="T_91db2_row2_col2" class="data row2 col2" >0.658071</td>
+      <td id="T_91db2_row2_col3" class="data row2 col3" >0.811216</td>
+      <td id="T_91db2_row2_col4" class="data row2 col4" >0.582185</td>
+      <td id="T_91db2_row2_col5" class="data row2 col5" >0.994634</td>
+    </tr>
+    <tr>
+      <th id="T_91db2_level0_row3" class="row_heading level0 row3" >3</th>
+      <td id="T_91db2_row3_col0" class="data row3 col0" >0.300000</td>
+      <td id="T_91db2_row3_col1" class="data row3 col1" >TimeXer</td>
+      <td id="T_91db2_row3_col2" class="data row3 col2" >11.554324</td>
+      <td id="T_91db2_row3_col3" class="data row3 col3" >3.399165</td>
+      <td id="T_91db2_row3_col4" class="data row3 col4" >3.166720</td>
+      <td id="T_91db2_row3_col5" class="data row3 col5" >0.905788</td>
+    </tr>
+    <tr>
+      <th id="T_91db2_level0_row4" class="row_heading level0 row4" >4</th>
+      <td id="T_91db2_row4_col0" class="data row4 col0" >0.300000</td>
+      <td id="T_91db2_row4_col1" class="data row4 col1" >Moirai-MoE</td>
+      <td id="T_91db2_row4_col2" class="data row4 col2" >1.381791</td>
+      <td id="T_91db2_row4_col3" class="data row4 col3" >1.175496</td>
+      <td id="T_91db2_row4_col4" class="data row4 col4" >0.881128</td>
+      <td id="T_91db2_row4_col5" class="data row4 col5" >0.988733</td>
+    </tr>
+    <tr>
+      <th id="T_91db2_level0_row5" class="row_heading level0 row5" >5</th>
+      <td id="T_91db2_row5_col0" class="data row5 col0" >0.400000</td>
+      <td id="T_91db2_row5_col1" class="data row5 col1" >Meta LSTM</td>
+      <td id="T_91db2_row5_col2" class="data row5 col2" >3.114609</td>
+      <td id="T_91db2_row5_col3" class="data row5 col3" >1.764825</td>
+      <td id="T_91db2_row5_col4" class="data row5 col4" >1.521223</td>
+      <td id="T_91db2_row5_col5" class="data row5 col5" >0.975145</td>
+    </tr>
+    <tr>
+      <th id="T_91db2_level0_row6" class="row_heading level0 row6" >6</th>
+      <td id="T_91db2_row6_col0" class="data row6 col0" >0.400000</td>
+      <td id="T_91db2_row6_col1" class="data row6 col1" >LightGBM</td>
+      <td id="T_91db2_row6_col2" class="data row6 col2" >46.890083</td>
+      <td id="T_91db2_row6_col3" class="data row6 col3" >6.847633</td>
+      <td id="T_91db2_row6_col4" class="data row6 col4" >5.841679</td>
+      <td id="T_91db2_row6_col5" class="data row6 col5" >0.625806</td>
+    </tr>
+    <tr>
+      <th id="T_91db2_level0_row7" class="row_heading level0 row7" >7</th>
+      <td id="T_91db2_row7_col0" class="data row7 col0" >0.400000</td>
+      <td id="T_91db2_row7_col1" class="data row7 col1" >CatBoost</td>
+      <td id="T_91db2_row7_col2" class="data row7 col2" >0.559584</td>
+      <td id="T_91db2_row7_col3" class="data row7 col3" >0.748054</td>
+      <td id="T_91db2_row7_col4" class="data row7 col4" >0.573813</td>
+      <td id="T_91db2_row7_col5" class="data row7 col5" >0.995534</td>
+    </tr>
+    <tr>
+      <th id="T_91db2_level0_row8" class="row_heading level0 row8" >8</th>
+      <td id="T_91db2_row8_col0" class="data row8 col0" >0.400000</td>
+      <td id="T_91db2_row8_col1" class="data row8 col1" >TimeXer</td>
+      <td id="T_91db2_row8_col2" class="data row8 col2" >4.574681</td>
+      <td id="T_91db2_row8_col3" class="data row8 col3" >2.138850</td>
+      <td id="T_91db2_row8_col4" class="data row8 col4" >1.755490</td>
+      <td id="T_91db2_row8_col5" class="data row8 col5" >0.963493</td>
+    </tr>
+    <tr>
+      <th id="T_91db2_level0_row9" class="row_heading level0 row9" >9</th>
+      <td id="T_91db2_row9_col0" class="data row9 col0" >0.400000</td>
+      <td id="T_91db2_row9_col1" class="data row9 col1" >Moirai-MoE</td>
+      <td id="T_91db2_row9_col2" class="data row9 col2" >1.359927</td>
+      <td id="T_91db2_row9_col3" class="data row9 col3" >1.166159</td>
+      <td id="T_91db2_row9_col4" class="data row9 col4" >0.849359</td>
+      <td id="T_91db2_row9_col5" class="data row9 col5" >0.989147</td>
+    </tr>
+    <tr>
+      <th id="T_91db2_level0_row10" class="row_heading level0 row10" >10</th>
+      <td id="T_91db2_row10_col0" class="data row10 col0" >0.500000</td>
+      <td id="T_91db2_row10_col1" class="data row10 col1" >Meta LSTM</td>
+      <td id="T_91db2_row10_col2" class="data row10 col2" >1.067240</td>
+      <td id="T_91db2_row10_col3" class="data row10 col3" >1.033073</td>
+      <td id="T_91db2_row10_col4" class="data row10 col4" >0.758773</td>
+      <td id="T_91db2_row10_col5" class="data row10 col5" >0.991301</td>
+    </tr>
+    <tr>
+      <th id="T_91db2_level0_row11" class="row_heading level0 row11" >11</th>
+      <td id="T_91db2_row11_col0" class="data row11 col0" >0.500000</td>
+      <td id="T_91db2_row11_col1" class="data row11 col1" >LightGBM</td>
+      <td id="T_91db2_row11_col2" class="data row11 col2" >0.900648</td>
+      <td id="T_91db2_row11_col3" class="data row11 col3" >0.949025</td>
+      <td id="T_91db2_row11_col4" class="data row11 col4" >0.621762</td>
+      <td id="T_91db2_row11_col5" class="data row11 col5" >0.992659</td>
+    </tr>
+    <tr>
+      <th id="T_91db2_level0_row12" class="row_heading level0 row12" >12</th>
+      <td id="T_91db2_row12_col0" class="data row12 col0" >0.500000</td>
+      <td id="T_91db2_row12_col1" class="data row12 col1" >CatBoost</td>
+      <td id="T_91db2_row12_col2" class="data row12 col2" >0.583976</td>
+      <td id="T_91db2_row12_col3" class="data row12 col3" >0.764183</td>
+      <td id="T_91db2_row12_col4" class="data row12 col4" >0.525839</td>
+      <td id="T_91db2_row12_col5" class="data row12 col5" >0.995240</td>
+    </tr>
+    <tr>
+      <th id="T_91db2_level0_row13" class="row_heading level0 row13" >13</th>
+      <td id="T_91db2_row13_col0" class="data row13 col0" >0.500000</td>
+      <td id="T_91db2_row13_col1" class="data row13 col1" >TimeXer</td>
+      <td id="T_91db2_row13_col2" class="data row13 col2" >9.078072</td>
+      <td id="T_91db2_row13_col3" class="data row13 col3" >3.012984</td>
+      <td id="T_91db2_row13_col4" class="data row13 col4" >2.828331</td>
+      <td id="T_91db2_row13_col5" class="data row13 col5" >0.926002</td>
+    </tr>
+    <tr>
+      <th id="T_91db2_level0_row14" class="row_heading level0 row14" >14</th>
+      <td id="T_91db2_row14_col0" class="data row14 col0" >0.500000</td>
+      <td id="T_91db2_row14_col1" class="data row14 col1" >Moirai-MoE</td>
+      <td id="T_91db2_row14_col2" class="data row14 col2" >1.200714</td>
+      <td id="T_91db2_row14_col3" class="data row14 col3" >1.095771</td>
+      <td id="T_91db2_row14_col4" class="data row14 col4" >0.786595</td>
+      <td id="T_91db2_row14_col5" class="data row14 col5" >0.990213</td>
+    </tr>
+    <tr>
+      <th id="T_91db2_level0_row15" class="row_heading level0 row15" >15</th>
+      <td id="T_91db2_row15_col0" class="data row15 col0" >0.600000</td>
+      <td id="T_91db2_row15_col1" class="data row15 col1" >Meta LSTM</td>
+      <td id="T_91db2_row15_col2" class="data row15 col2" >0.480311</td>
+      <td id="T_91db2_row15_col3" class="data row15 col3" >0.693045</td>
+      <td id="T_91db2_row15_col4" class="data row15 col4" >0.493615</td>
+      <td id="T_91db2_row15_col5" class="data row15 col5" >0.996145</td>
+    </tr>
+    <tr>
+      <th id="T_91db2_level0_row16" class="row_heading level0 row16" >16</th>
+      <td id="T_91db2_row16_col0" class="data row16 col0" >0.600000</td>
+      <td id="T_91db2_row16_col1" class="data row16 col1" >LightGBM</td>
+      <td id="T_91db2_row16_col2" class="data row16 col2" >0.414375</td>
+      <td id="T_91db2_row16_col3" class="data row16 col3" >0.643720</td>
+      <td id="T_91db2_row16_col4" class="data row16 col4" >0.473152</td>
+      <td id="T_91db2_row16_col5" class="data row16 col5" >0.996674</td>
+    </tr>
+    <tr>
+      <th id="T_91db2_level0_row17" class="row_heading level0 row17" >17</th>
+      <td id="T_91db2_row17_col0" class="data row17 col0" >0.600000</td>
+      <td id="T_91db2_row17_col1" class="data row17 col1" >CatBoost</td>
+      <td id="T_91db2_row17_col2" class="data row17 col2" >0.429449</td>
+      <td id="T_91db2_row17_col3" class="data row17 col3" >0.655323</td>
+      <td id="T_91db2_row17_col4" class="data row17 col4" >0.462082</td>
+      <td id="T_91db2_row17_col5" class="data row17 col5" >0.996553</td>
+    </tr>
+    <tr>
+      <th id="T_91db2_level0_row18" class="row_heading level0 row18" >18</th>
+      <td id="T_91db2_row18_col0" class="data row18 col0" >0.600000</td>
+      <td id="T_91db2_row18_col1" class="data row18 col1" >TimeXer</td>
+      <td id="T_91db2_row18_col2" class="data row18 col2" >0.914563</td>
+      <td id="T_91db2_row18_col3" class="data row18 col3" >0.956328</td>
+      <td id="T_91db2_row18_col4" class="data row18 col4" >0.720638</td>
+      <td id="T_91db2_row18_col5" class="data row18 col5" >0.992660</td>
+    </tr>
+    <tr>
+      <th id="T_91db2_level0_row19" class="row_heading level0 row19" >19</th>
+      <td id="T_91db2_row19_col0" class="data row19 col0" >0.600000</td>
+      <td id="T_91db2_row19_col1" class="data row19 col1" >Moirai-MoE</td>
+      <td id="T_91db2_row19_col2" class="data row19 col2" >0.901773</td>
+      <td id="T_91db2_row19_col3" class="data row19 col3" >0.949617</td>
+      <td id="T_91db2_row19_col4" class="data row19 col4" >0.704527</td>
+      <td id="T_91db2_row19_col5" class="data row19 col5" >0.992762</td>
+    </tr>
+    <tr>
+      <th id="T_91db2_level0_row20" class="row_heading level0 row20" >20</th>
+      <td id="T_91db2_row20_col0" class="data row20 col0" >0.700000</td>
+      <td id="T_91db2_row20_col1" class="data row20 col1" >Meta LSTM</td>
+      <td id="T_91db2_row20_col2" class="data row20 col2" >0.859711</td>
+      <td id="T_91db2_row20_col3" class="data row20 col3" >0.927206</td>
+      <td id="T_91db2_row20_col4" class="data row20 col4" >0.653592</td>
+      <td id="T_91db2_row20_col5" class="data row20 col5" >0.993056</td>
+    </tr>
+    <tr>
+      <th id="T_91db2_level0_row21" class="row_heading level0 row21" >21</th>
+      <td id="T_91db2_row21_col0" class="data row21 col0" >0.700000</td>
+      <td id="T_91db2_row21_col1" class="data row21 col1" >LightGBM</td>
+      <td id="T_91db2_row21_col2" class="data row21 col2" >0.954150</td>
+      <td id="T_91db2_row21_col3" class="data row21 col3" >0.976806</td>
+      <td id="T_91db2_row21_col4" class="data row21 col4" >0.684374</td>
+      <td id="T_91db2_row21_col5" class="data row21 col5" >0.992294</td>
+    </tr>
+    <tr>
+      <th id="T_91db2_level0_row22" class="row_heading level0 row22" >22</th>
+      <td id="T_91db2_row22_col0" class="data row22 col0" >0.700000</td>
+      <td id="T_91db2_row22_col1" class="data row22 col1" >CatBoost</td>
+      <td id="T_91db2_row22_col2" class="data row22 col2" >0.639553</td>
+      <td id="T_91db2_row22_col3" class="data row22 col3" >0.799721</td>
+      <td id="T_91db2_row22_col4" class="data row22 col4" >0.570431</td>
+      <td id="T_91db2_row22_col5" class="data row22 col5" >0.994834</td>
+    </tr>
+    <tr>
+      <th id="T_91db2_level0_row23" class="row_heading level0 row23" >23</th>
+      <td id="T_91db2_row23_col0" class="data row23 col0" >0.700000</td>
+      <td id="T_91db2_row23_col1" class="data row23 col1" >TimeXer</td>
+      <td id="T_91db2_row23_col2" class="data row23 col2" >1.433645</td>
+      <td id="T_91db2_row23_col3" class="data row23 col3" >1.197349</td>
+      <td id="T_91db2_row23_col4" class="data row23 col4" >0.905455</td>
+      <td id="T_91db2_row23_col5" class="data row23 col5" >0.988421</td>
+    </tr>
+    <tr>
+      <th id="T_91db2_level0_row24" class="row_heading level0 row24" >24</th>
+      <td id="T_91db2_row24_col0" class="data row24 col0" >0.700000</td>
+      <td id="T_91db2_row24_col1" class="data row24 col1" >Moirai-MoE</td>
+      <td id="T_91db2_row24_col2" class="data row24 col2" >1.347542</td>
+      <td id="T_91db2_row24_col3" class="data row24 col3" >1.160837</td>
+      <td id="T_91db2_row24_col4" class="data row24 col4" >0.848690</td>
+      <td id="T_91db2_row24_col5" class="data row24 col5" >0.989116</td>
+    </tr>
+  </tbody>
+</table>
+
+        </body>
+        </html>
+        
