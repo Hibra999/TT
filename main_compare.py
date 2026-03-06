@@ -22,7 +22,7 @@ def fast_metrics(yt,yp):
     return mse,np.sqrt(mse),mae
 
 def main():
-    bd=os.path.dirname(os.path.abspath(__file__));f=os.path.join(bd,"data","tokens","AAPL2020-2025.csv")
+    bd=os.path.dirname(os.path.abspath(__file__));f=os.path.join(bd,"data","tokens","AAPL_2020-2025.csv")
     if not os.path.exists(f):return print(f"File missing: {f}")
     df=pd.read_csv(f); lc=np.log(df["Close"]/df["Close"].shift(-1)).dropna().reset_index(drop=True)
     dff=pd.concat([TA(df).reset_index(drop=True),macroeconomicos(df["Date_final"]).reset_index(drop=True)],axis=1).iloc[1:]
