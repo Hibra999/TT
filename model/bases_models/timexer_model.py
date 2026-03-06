@@ -170,11 +170,12 @@ class SeqDataset(Dataset):
         return torch.from_numpy(self.data[idx:idx+self.seq_len,:]),torch.from_numpy(self.data[idx+self.seq_len:idx+self.seq_len+self.pred_len,-1])
 
 def build_timexer_config(trial,enc_in,seq_len,pred_len,features='MS'):
-    return SimpleNamespace(task_name='long_term_forecast',features=features,seq_len=seq_len,pred_len=pred_len,use_norm=False,
-        patch_len=trial.suggest_categorical("patch_len",[4,8,12,16,24]),d_model=trial.suggest_categorical("d_model",[64,128,256]),
-        dropout=trial.suggest_float("dropout",0.0,0.3),embed='fixed',freq='h',factor=trial.suggest_int("factor",1,5),
-        n_heads=trial.suggest_categorical("n_heads",[4,8]),e_layers=trial.suggest_int("e_layers",1,4),
-        d_ff=trial.suggest_categorical("d_ff",[256,512,1024]),activation=trial.suggest_categorical("activation",["relu","gelu"]),enc_in=enc_in)
+    use_norm=trial.suggest_categorical("use_norm",[True,False])
+    return SimpleNamespace(task_name='long_term_forecast',features=features,seq_len=seq_len,pred_len=pred_len,use_norm=use_norm,
+        patch_len=trial.suggest_categorical("patch_len",[4,8,12,16,24]),d_model=trial.suggest_categorical("d_model",[64,128,256,512]),
+        dropout=trial.suggest_float("dropout",0.0,0.5),embed='fixed',freq='h',factor=trial.suggest_int("factor",1,5),
+        n_heads=trial.suggest_categorical("n_heads",[4,8,16]),e_layers=trial.suggest_int("e_layers",1,6),
+        d_ff=trial.suggest_categorical("d_ff",[256,512,1024,2048]),activation=trial.suggest_categorical("activation",["relu","gelu"]),enc_in=enc_in)
 
 def build_model_from_trial(trial,enc_in,seq_len,pred_len,device,features='MS',pretrained_path=None,freeze_backbone=False):
     model=Model(build_timexer_config(trial,enc_in,seq_len,pred_len,features)).to(device)
@@ -188,8 +189,9 @@ def build_model_from_trial(trial,enc_in,seq_len,pred_len,device,features='MS',pr
 def objective_timexer_global(trial,X,y,splitter,device=None,seq_len=96,pred_len=30,features='MS',pretrained_path=None,freeze_backbone=False,oof_storage=None):
     device=device or torch.device('cuda'if torch.cuda.is_available()else'cpu')
     enc_in=X.shape[1]+1
-    batch_size,lr=trial.suggest_categorical("batch_size",[16,32,64]),trial.suggest_float("lr",1e-5,1e-3,log=True)
-    weight_decay,max_epochs,patience_val=trial.suggest_float("weight_decay",1e-6,1e-3,log=True),trial.suggest_int("max_epochs",10,50),trial.suggest_int("patience",5,15)
+    batch_size,lr=trial.suggest_categorical("batch_size",[16,32,64]),trial.suggest_float("lr",1e-6,1e-3,log=True)
+    weight_decay,max_epochs,patience_val=trial.suggest_float("weight_decay",1e-6,1e-2,log=True),trial.suggest_int("max_epochs",10,100),trial.suggest_int("patience",5,20)
+    use_scheduler=trial.suggest_categorical("use_scheduler",[True,False])
     X_v=np.nan_to_num((X.values if hasattr(X,'values')else np.array(X)).astype(np.float32),nan=0.0,posinf=0.0,neginf=0.0)
     y_v=np.nan_to_num((y.values if hasattr(y,'values')else np.array(y)).astype(np.float32),nan=0.0,posinf=0.0,neginf=0.0).reshape(-1,1)
     full_data=np.concatenate([X_v,y_v],axis=1)
@@ -214,6 +216,7 @@ def objective_timexer_global(trial,X,y,splitter,device=None,seq_len=96,pred_len=
             continue
         model=build_model_from_trial(trial,enc_in=enc_in,seq_len=seq_len,pred_len=pred_len,device=device,features=features,pretrained_path=pretrained_path,freeze_backbone=freeze_backbone)
         criterion,optimizer=nn.L1Loss(),torch.optim.AdamW(filter(lambda p:p.requires_grad,model.parameters()),lr=lr,weight_decay=weight_decay)
+        scheduler=torch.optim.lr_scheduler.CosineAnnealingLR(optimizer,T_max=max_epochs,eta_min=1e-7) if use_scheduler else None
         best_loss,pat_cnt=float("inf"),0
         for _ in range(max_epochs):
             model.train();losses=[]
@@ -225,6 +228,7 @@ def objective_timexer_global(trial,X,y,splitter,device=None,seq_len=96,pred_len=
                     return float("inf")
                 loss.backward();nn.utils.clip_grad_norm_(model.parameters(),1.0);optimizer.step();losses.append(loss.item())
             ml=np.mean(losses)
+            if scheduler:scheduler.step()
             if ml<best_loss:best_loss,pat_cnt=ml,0
             else:
                 pat_cnt+=1
@@ -280,7 +284,7 @@ def train_final_and_predict_test(X_train, y_train, X_test, y_test, best_params, 
         features=features,
         seq_len=seq_len,
         pred_len=pred_len,
-        use_norm=False,
+        use_norm=best_params.get('use_norm', False),
         patch_len=best_params.get('patch_len', 16),
         d_model=best_params.get('d_model', 128),
         dropout=best_params.get('dropout', 0.1),
@@ -326,6 +330,8 @@ def train_final_and_predict_test(X_train, y_train, X_test, y_test, best_params, 
     patience_val = best_params.get('patience', 10)
     
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+    use_scheduler = best_params.get('use_scheduler', False)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max_epochs, eta_min=1e-7) if use_scheduler else None
     
     best_loss, pat_cnt = float("inf"), 0
     for epoch in range(max_epochs):
@@ -345,6 +351,7 @@ def train_final_and_predict_test(X_train, y_train, X_test, y_test, best_params, 
         
         if losses:
             ml = np.mean(losses)
+            if scheduler: scheduler.step()
             if ml < best_loss:
                 best_loss, pat_cnt = ml, 0
             else:

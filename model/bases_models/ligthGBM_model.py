@@ -3,26 +3,26 @@ from sklearn.metrics import mean_absolute_error
 import numpy as np
 
 def objective_global(trial, X, y, splitter, oof_storage=None):
-    boosting_type = trial.suggest_categorical("boosting_type", ["gbdt", "dart", "rf"])
+    boosting_type = trial.suggest_categorical("boosting_type", ["gbdt", "dart"])
     param = {
         "boosting_type": boosting_type,
         "linear_tree": False,
-        "num_leaves": trial.suggest_int("num_leaves", 31, 200),
-        "max_depth": trial.suggest_int("max_depth", 3, 12),
-        "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
-        "n_estimators": trial.suggest_int("n_estimators", 100, 1000),
+        "num_leaves": trial.suggest_int("num_leaves", 20, 256),
+        "max_depth": trial.suggest_int("max_depth", 3, 15),
+        "learning_rate": trial.suggest_float("learning_rate", 0.005, 0.3, log=True),
+        "n_estimators": trial.suggest_int("n_estimators", 100, 2000),
         "min_child_samples": trial.suggest_int("min_child_samples", 5, 100),
         "subsample": trial.suggest_float("subsample", 0.5, 1.0),
-        "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 1.0),
+        "colsample_bytree": trial.suggest_float("colsample_bytree", 0.4, 1.0),
         "reg_alpha": trial.suggest_float("reg_alpha", 1e-8, 10.0, log=True),
         "reg_lambda": trial.suggest_float("reg_lambda", 1e-8, 10.0, log=True),
+        "min_split_gain": trial.suggest_float("min_split_gain", 0.0, 1.0),
+        "path_smooth": trial.suggest_float("path_smooth", 0.0, 10.0),
+        "extra_trees": trial.suggest_categorical("extra_trees", [True, False]),
         "random_state": 42,
         "device": "gpu",
         "verbose": -1
     }
-    if param["boosting_type"] == "rf":
-        param["subsample"] = max(param["subsample"], 0.7)
-        param["subsample_freq"] = 1
     
     fold_scores = []
     fold_preds = []

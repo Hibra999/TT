@@ -4,18 +4,27 @@ import numpy as np
 
 def objective_catboost_global(trial, X, y, splitter, oof_storage=None):
     bootstrap_type = trial.suggest_categorical("bootstrap_type", ["Bayesian", "Bernoulli"])
+    grow_policy = trial.suggest_categorical("grow_policy", ["SymmetricTree", "Depthwise", "Lossguide"])
+    import torch as _torch
+    _has_gpu = _torch.cuda.is_available()
+    loss_function = trial.suggest_categorical("loss_function", ["RMSE", "MAE"])
+    # CatBoost GPU no soporta MAE → fallback a CPU
+    _task_type = "GPU" if (_has_gpu and loss_function == "RMSE") else "CPU"
     param = {
-        "iterations": trial.suggest_int("iterations", 100, 1000),
-        "depth": trial.suggest_int("depth", 4, 10),
-        "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
+        "iterations": trial.suggest_int("iterations", 100, 2000),
+        "depth": trial.suggest_int("depth", 4, 12),
+        "learning_rate": trial.suggest_float("learning_rate", 0.005, 0.3, log=True),
         "l2_leaf_reg": trial.suggest_float("l2_leaf_reg", 1e-3, 10.0, log=True),
-        "min_data_in_leaf": trial.suggest_int("min_data_in_leaf", 5, 100),
-        "loss_function": "RMSE",
+        "min_data_in_leaf": trial.suggest_int("min_data_in_leaf", 1, 100),
+        "random_strength": trial.suggest_float("random_strength", 0.0, 10.0),
+        "border_count": trial.suggest_int("border_count", 32, 255),
+        "loss_function": loss_function,
         "verbose": 0,
         "random_seed": 42,
         "allow_writing_files": False,
         "bootstrap_type": bootstrap_type,
-        "task_type": "CPU"
+        "grow_policy": grow_policy,
+        "task_type": _task_type
     }
     if bootstrap_type == "Bernoulli":
         param["subsample"] = trial.suggest_float("subsample", 0.5, 1.0)
@@ -30,7 +39,7 @@ def objective_catboost_global(trial, X, y, splitter, oof_storage=None):
         X_train, y_train = X.iloc[t_idx], y.iloc[t_idx]
         X_val, y_val = X.iloc[v_idx], y.iloc[v_idx]
         model = CatBoostRegressor(**param)
-        model.fit(X_train, y_train, eval_set=(X_val, y_val), early_stopping_rounds=5, verbose=False)
+        model.fit(X_train, y_train, eval_set=(X_val, y_val), early_stopping_rounds=50, verbose=False)
         y_pred = model.predict(X_val)
         fold_scores.append(mean_absolute_error(y_val, y_pred))
         fold_preds.append(y_pred)
