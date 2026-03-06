@@ -67,8 +67,9 @@ def main():
                 
     if m:
         dm=pd.DataFrame(m);out=os.path.join(bd,"metrics_compare.html")
-        fig=px.bar(dm,x='WR',y='MAE',color='Mod',barmode='group',text_auto='.2f',title="Sensibilidad Multi-Ventana: MAE por Modelo en Escala Real (Menor es Mejor)",labels={'WR':'Window Ratio (Proporción Ventana)'})
-        fig.update_layout(template='plotly_dark',title_x=0.5,legend=dict(orientation="h",yanchor="bottom",y=1.02,xanchor="center",x=0.5));fig.write_html(out)
+        mm=dm.melt(id_vars=['WR','Mod'],value_vars=['MSE','RMSE','MAE','R2'],var_name='Met',value_name='Val')
+        fig=px.bar(mm,x='WR',y='Val',color='Mod',barmode='group',facet_col='Met',text_auto='.3s',title="Sensibilidad Multi-Ventana de Modelos en Escala Real")
+        fig.update_layout(template='plotly_dark',title_x=0.5,legend=dict(orientation="h",yanchor="bottom",y=1.08,xanchor="center",x=0.5));fig.update_yaxes(matches=None);fig.write_html(out)
         print(f"Grafico Barras HTML generado en: {out}")
         b=dm.loc[dm['MAE'].idxmin()]
         print(f"MEJOR Mod: {b['Mod']} | WR: {b['WR']} | MAE: {b['MAE']}")
