@@ -127,10 +127,11 @@ def main():
         study_moirai.optimize(lambda trial: objective_moirai_moe_global(trial, X_train, y_train, splitter_temp, device=device, pred_len=fh_val, model_size='small', freq='D', use_full_train=True, oof_storage=oof_moirai), n_trials=1, n_jobs=1)
         
         # 2. Recoleccion OOF Dataframe
-        preds_lgb, idx_lgb = collect_oof_predictions(oof_lgb)
-        preds_cb, idx_cb = collect_oof_predictions(oof_cb)
-        preds_tx, idx_tx = collect_oof_predictions(oof_tx)
+        preds_lgb, idx_lgb, _ = collect_oof_predictions(oof_lgb)
+        preds_cb, idx_cb, _ = collect_oof_predictions(oof_cb)
+        preds_tx, idx_tx, _ = collect_oof_predictions(oof_tx)
         preds_moirai, idx_moirai, _ = collect_oof_predictions(oof_moirai)
+        
         
         oof_df_temp = build_oof_dataframe(oof_lgb, oof_cb, oof_tx, oof_moirai, y_train)
         
