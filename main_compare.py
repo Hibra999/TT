@@ -82,14 +82,17 @@ def main():
         if 'params' in ot: ptx,tx_idx,_=t_tx(X,ys,Xt,yt,ot['params'],dv,seq_len=96,pred_len=1)
         if 'params' in om: pmo,mo_idx=t_mo(ys,yt,om['params'],model_size='small',freq='D')
         
-        # Align Test sets
-        tlen=len(yt); test_map={}
-        if pl is not None: test_map['LightGBM']=pl.flatten()
-        if pc is not None: test_map['CatBoost']=pc.flatten()
-        if ptx is not None: 
-            tx_arr=np.full(tlen,np.nan);tx_arr[tx_idx]=ptx;test_map['TimeXer']=tx_arr
-        if pmo is not None: 
-            mo_arr=np.full(tlen,np.nan);mo_arr[mo_idx]=pmo;test_map['Moirai-MoE']=mo_arr
+        # Align Test sets - use OOF column names so Meta-LSTM gets same order
+        tlen=len(yt); oof_m_cols=[c for c in odf.columns if c not in ['idx','target']]
+        # Map: display name -> oof col name
+        col_map={'LightGBM':_get(odf,['lgb','light']),'CatBoost':_get(odf,['cb','catboost']),'TimeXer':_get(odf,['tx','timex']),'Moirai-MoE':_get(odf,['moirai','moe'])}
+        test_map={}
+        if pl is not None and col_map.get('LightGBM'): test_map[col_map['LightGBM']]=pl.flatten()
+        if pc is not None and col_map.get('CatBoost'): test_map[col_map['CatBoost']]=pc.flatten()
+        if ptx is not None and col_map.get('TimeXer'):
+            tx_arr=np.full(tlen,np.nan);tx_arr[tx_idx]=ptx;test_map[col_map['TimeXer']]=tx_arr
+        if pmo is not None and col_map.get('Moirai-MoE'):
+            mo_arr=np.full(tlen,np.nan);mo_arr[mo_idx]=pmo;test_map[col_map['Moirai-MoE']]=mo_arr
             
         tdf=pd.DataFrame(test_map); tdf['idx']=np.arange(tlen); tdf['target']=yt.values
         tdf=tdf.dropna().reset_index(drop=True)
@@ -98,9 +101,8 @@ def main():
         # Predict Meta-LSTM in Test
         m_cols=[c for c in tdf.columns if c not in ['idx','target']]
         if mdl and len(tdf)>0:
-            # We need the last chunk of OOF to predict the first Test
-            oof_mat=odf[m_cols].values # base models OOF
-            tt_mat=tdf[m_cols].values # base models TEST
+            oof_mat=odf[m_cols].values
+            tt_mat=tdf[m_cols].values
             comp_mat=np.vstack([oof_mat[-(ws-1):],tt_mat]) if ws>1 and len(oof_mat)>=(ws-1) else tt_mat
             
             p_meta=[]
@@ -113,7 +115,8 @@ def main():
             if len(p_meta)==len(tdf):
                 tdf['Meta LSTM']=p_meta
             
-        # SCORE TEST
+        # SCORE TEST - map oof col names back to display names
+        rev_map={v:k for k,v in col_map.items() if v}
         t_vi=tdf['idx'].values+ts
         t_vi=t_vi[(t_vi>0)&(t_vi<len(cp))]
         if not len(t_vi):continue
@@ -123,7 +126,8 @@ def main():
         for tgt in m_cols+(['Meta LSTM'] if 'Meta LSTM' in tdf.columns else []):
             t_pxn=t_pa*np.exp(sc(tdf[tgt].values[:len(t_vi)].reshape(-1,1)).flatten())
             ms,rm,ma=fast_metrics(t_pr,t_pxn)
-            m.append({'Fase':'Test','WR':wr,'Mod':tgt,'MSE':ms,'RMSE':rm,'MAE':ma,'R2':r2_score(t_pr,t_pxn)})
+            display_name=rev_map.get(tgt,tgt)
+            m.append({'Fase':'Test','WR':wr,'Mod':display_name,'MSE':ms,'RMSE':rm,'MAE':ma,'R2':r2_score(t_pr,t_pxn)})
 
     if m:
         dm=pd.DataFrame(m);out=os.path.join(bd,"metrics_compare.html")
