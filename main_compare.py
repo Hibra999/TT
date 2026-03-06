@@ -36,7 +36,7 @@ def main():
     # Configuracion Fija
     token = 'AAPL' # Por defecto, o modificar a conveniencia
     _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-    file_path = os.path.join(_BASE_DIR, "data", "tokens", f"{token}2020-2025.csv")
+    file_path = os.path.join(_BASE_DIR, "data", "tokens", f"{token}_2020-2025.csv")
     
     if not os.path.exists(file_path):
         print(f"Error: Archivo de datos no encontrado: {file_path}")
