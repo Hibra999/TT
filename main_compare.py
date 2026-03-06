@@ -68,8 +68,29 @@ def main():
     if m:
         dm=pd.DataFrame(m);out=os.path.join(bd,"metrics_compare.html")
         mm=dm.melt(id_vars=['WR','Mod'],value_vars=['MSE','RMSE','MAE','R2'],var_name='Met',value_name='Val')
-        fig=px.bar(mm,x='WR',y='Val',color='Mod',barmode='group',facet_col='Met',text_auto='.3s',title="Sensibilidad Multi-Ventana de Modelos en Escala Real")
-        fig.update_layout(template='plotly_dark',title_x=0.5,legend=dict(orientation="h",yanchor="bottom",y=1.08,xanchor="center",x=0.5));fig.update_yaxes(matches=None);fig.write_html(out)
+        fig=px.bar(mm,x='WR',y='Val',color='Mod',barmode='group',facet_row='Met',text_auto='.3s',title="Sensibilidad Multi-Ventana de Modelos en Escala Real",height=1000)
+        
+        fig.update_layout(template='plotly_white',title_x=0.5,legend=dict(orientation="h",yanchor="bottom",y=1.02,xanchor="center",x=0.5))
+        fig.update_yaxes(matches=None)
+        
+        # Resaltado de mejores barras
+        for met in ['MSE','RMSE','MAE','R2']:
+            sub=mm[mm['Met']==met]
+            bv=sub['Val'].max() if met=='R2' else sub['Val'].min()
+            br=sub[sub['Val']==bv].iloc[0] # Fila ganadora
+            # Encontrar el trazo en la figura que coincida con este Mod y facet
+            for d in fig.data:
+                if d.name==br['Mod']:
+                    if hasattr(d,'marker') and hasattr(d.marker,'color'):
+                        c=list(d.marker.color) if isinstance(d.marker.color,(list,tuple,np.ndarray)) else [d.marker.color]*len(d.x)
+                        # Identificar y colorear el x correspondiente
+                        for i,xx in enumerate(d.x):
+                            # El y debe ser approx bv
+                            if xx==br['WR'] and abs(d.y[i]-bv)<1e-9:
+                                c[i]='#2ecc71' # Verde brillante para el mejor
+                        d.marker.color=c
+
+        fig.write_html(out)
         print(f"Grafico Barras HTML generado en: {out}")
         b=dm.loc[dm['MAE'].idxmin()]
         print(f"MEJOR Mod: {b['Mod']} | WR: {b['WR']} | MAE: {b['MAE']}")
