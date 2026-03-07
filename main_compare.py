@@ -135,70 +135,92 @@ def main():
 
     if m:
         dm=pd.DataFrame(m);out=os.path.join(bd,"metrics_compare.html")
-        # Multi-facet Plotly 
-        mm=dm.melt(id_vars=['WR','Mod','Fase'],value_vars=['MSE','RMSE','MAE','R2'],var_name='Met',value_name='Val')
-        mm['Subplot']=mm['Fase']+" | "+mm['Met']
         
-        # Friedman Statistical Test per Metric
+        # Friedman Statistical Test per Metric and Phase
         p_vals = {}
         if friedmanchisquare is not None:
-            for met in ['MSE','RMSE','MAE','R2']:
-                df_m = dm.copy()
-                df_m['Block'] = df_m['Mod'] + " | " + df_m['Fase']
-                piv = df_m.pivot(index='Block', columns='WR', values=met).dropna()
-                if len(piv) >= 2 and len(piv.columns) >= 2:
-                    try:
-                        _, p = friedmanchisquare(*[piv[c] for c in piv.columns])
-                        p_vals[met] = p
-                    except Exception:
-                        pass
+            for fase in ['Train (OOF)', 'Test']:
+                p_vals[fase] = {}
+                for met in ['MSE','RMSE','MAE','R2']:
+                    df_m = dm[dm['Fase']==fase].copy()
+                    piv = df_m.pivot(index='Mod', columns='WR', values=met).dropna()
+                    if len(piv) >= 2 and len(piv.columns) >= 2:
+                        try:
+                            _, p = friedmanchisquare(*[piv[c] for c in piv.columns])
+                            p_vals[fase][met] = p
+                        except Exception: pass
 
-        # Build grouped bar chart using ploty subplots manually to allow 2x4 grid
-        fig=px.bar(mm,x='WR',y='Val',color='Mod',barmode='group',facet_col='Met',facet_row='Fase',text_auto='.3s',title=f"Sensibilidad Multi-Ventana de Modelos e Inferencia Estadística ({token})",height=800)
+        import plotly.graph_objects as go
+        from plotly.subplots import make_subplots
+
+        # We will create two sets of traces, one for Train and one for Test
+        fig = make_subplots(rows=1, cols=4, subplot_titles=['MSE','RMSE','MAE','R2'], horizontal_spacing=0.07)
         
-        fig.update_layout(template='plotly_white',title_x=0.5,legend=dict(orientation="h",yanchor="bottom",y=1.02,xanchor="center",x=0.5))
-        fig.update_yaxes(matches=None)
+        phases = ['Train (OOF)', 'Test']
+        metrics = ['MSE','RMSE','MAE','R2']
+        all_traces = []
         
-        # Inject p-values into annotations
-        for a in fig.layout.annotations:
-            if 'Met=' in a.text:
-                met_name = a.text.split('=')[1]
-                p = p_vals.get(met_name)
-                if p is not None:
-                    sig = "⭐" if p < 0.05 else "❌"
-                    a.text = f"{met_name} (Friedman p={p:.3f} {sig})"
-                else:
-                    a.text = met_name
-            elif 'Fase=' in a.text:
-                a.text = f"<b>{a.text.split('=')[1]}</b>"
-        
-        for r,fase in enumerate(['Test','Train (OOF)']):
-            for c,met in enumerate(['MSE','RMSE','MAE','R2']):
-                sub=mm[(mm['Fase']==fase)&(mm['Met']==met)]
-                if len(sub)==0: continue
-                bv=sub['Val'].max() if met=='R2' else sub['Val'].min()
-                if pd.isna(bv): continue
-                br=sub[sub['Val']==bv].iloc[0]
+        for f_idx, fase in enumerate(phases):
+            phase_traces = []
+            f_dm = dm[dm['Fase']==fase]
+            
+            for m_idx, met in enumerate(metrics, 1):
+                f_mm = f_dm[f_dm['Mod'].isin(f_dm['Mod'].unique())] # Ensure consistent ordering
+                bv = f_dm[f_dm['Mod'].isin(f_dm['Mod'].unique())].melt(id_vars=['WR','Mod'], value_vars=[met])['value']
+                bv = bv.max() if met=='R2' else bv.min()
                 
-                # Plotly assigns axes from bottom-left
-                row_idx=2 if r==0 else 1 # facet_row='Fase' orders bottom to top: Train first? Plotly reverses alphabetical if string? Train(OOF), Test. Let's trace it.
-                # Find matching subplot data directly from x/y/mod combination
-                for d in fig.data:
-                    if d.name==br['Mod']:
-                        if hasattr(d,'axis') or True:
-                            c_mark=list(d.marker.color) if isinstance(d.marker.color,(list,tuple,np.ndarray)) else [d.marker.color]*len(d.x)
-                            c_mark_mod=False
-                            for i,xx in enumerate(d.x):
-                                # Check if this trace point belongs to this Subplot by matching the exact value
-                                if xx==br['WR'] and abs(d.y[i]-bv)<1e-9:
-                                    # Since plotly might reuse traces across facets with yaxis2, yaxis3 etc
-                                    # We can color it by trusting the unique matching (WR, Val, Mod) 
-                                    c_mark[i]='#2ecc71'
-                                    c_mark_mod=True
-                            if c_mark_mod:
-                                d.marker.color=c_mark
+                for mod in f_dm['Mod'].unique():
+                    mod_data = f_dm[f_dm['Mod'] == mod]
+                    trace = go.Bar(
+                        x=mod_data['WR'], y=mod_data[met], name=mod,
+                        text=mod_data[met], texttemplate='%{y:.3s}', textposition='auto',
+                        legendgroup=mod, showlegend=(m_idx==1 and f_idx==0),
+                        visible=(fase=='Train (OOF)'),
+                        marker=dict(color=['#2ecc71' if (abs(v-bv)<1e-9) else None for v in mod_data[met]])
+                    )
+                    fig.add_trace(trace, row=1, col=m_idx)
+                    phase_traces.append(True)
+            all_traces.append(phase_traces)
+
+        # Update layout with interactive buttons
+        n_train = len(dm[dm['Fase']=='Train (OOF)']['Mod'].unique()) * 4
+        n_test = len(dm[dm['Fase']=='Test']['Mod'].unique()) * 4
+        
+        # Function to generate button args
+        def get_args(show_train):
+            vis = [show_train]*n_train + [(not show_train)]*n_test
+            title = f"<b>{'Validación (OOF)' if show_train else 'Desempeño Real (Test)'} - {token}</b>"
+            # Update annotations (titles) to include Friedman p-values for the active phase
+            new_annotations = []
+            current_fase = 'Train (OOF)' if show_train else 'Test'
+            for i, met in enumerate(metrics):
+                p = p_vals.get(current_fase, {}).get(met)
+                sig = f" (p={p:.3f} {'⭐' if p < 0.05 else '❌'})" if p is not None else ""
+                new_annotations.append(dict(text=f"<b>{met}</b>{sig}", xref="paper", yref="paper", x=(i*0.25)+0.1, y=1.05, showarrow=False, font=dict(size=14)))
+            return [{"visible": vis}, {"annotations": new_annotations, "title": title}]
+
+        fig.update_layout(
+            title=f"<b>Análisis de Sensibilidad de Ventanas ({token})</b>",
+            template='plotly_white',
+            height=600,
+            margin=dict(t=150, b=50),
+            legend=dict(orientation="h", yanchor="bottom", y=1.1, xanchor="center", x=0.5),
+            updatemenus=[dict(
+                type="buttons", direction="right", active=0, x=0.5, y=1.25, xanchor="center",
+                buttons=[
+                    dict(label="🔍 Fase de Entrenamiento (OOF)", method="update", args=get_args(True)),
+                    dict(label="🚀 Fase de Evaluación (Test)", method="update", args=get_args(False))
+                ]
+            )]
+        )
+
+        # Initialize with Train annotations
+        initial_args = get_args(True)
+        fig.update_layout(annotations=initial_args[1]['annotations'])
+        fig.update_yaxes(matches=None, showgrid=True, gridcolor='lightgrey')
+        fig.update_xaxes(title_text="Window Ratio")
 
         fig.write_html(out)
-        print(f"Grafico HTML 2x4 generado: {out}")
+        print(f"Reporte Interactivo generado: {out}")
 
 if __name__=="__main__":main()
