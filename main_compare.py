@@ -3,6 +3,10 @@ from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import r2_score
 from numba import njit
 from plotly.subplots import make_subplots
+try:
+    from scipy.stats import friedmanchisquare
+except ImportError:
+    friedmanchisquare = None
 
 from features.macroeconomics import macroeconomicos
 from features.tecnical_indicators import TA
@@ -43,7 +47,7 @@ def main():
     yt=pd.Series(st.transform(yte_r.values.reshape(-1,1)).flatten(),name='lc')
     
     dv=torch.device('cuda' if torch.cuda.is_available() else 'cpu');m=[]
-    v_rt=[0.3,0.4,0.5,0.6,0.7];cp=df['Close'].values;sc=st.inverse_transform
+    v_rt=[0.3, 0.4, 0.42, 0.45, 0.48, 0.5, 0.6, 0.7];cp=df['Close'].values;sc=st.inverse_transform
     preload_moirai_module(model_size='small')
     
     for wr in v_rt:
@@ -132,15 +136,41 @@ def main():
     if m:
         dm=pd.DataFrame(m);out=os.path.join(bd,"metrics_compare.html")
         # Multi-facet Plotly 
-        # Fase becomes rows, Metric becomes cols maybe or viceversa
         mm=dm.melt(id_vars=['WR','Mod','Fase'],value_vars=['MSE','RMSE','MAE','R2'],var_name='Met',value_name='Val')
         mm['Subplot']=mm['Fase']+" | "+mm['Met']
         
+        # Friedman Statistical Test per Metric
+        p_vals = {}
+        if friedmanchisquare is not None:
+            for met in ['MSE','RMSE','MAE','R2']:
+                df_m = dm.copy()
+                df_m['Block'] = df_m['Mod'] + " | " + df_m['Fase']
+                piv = df_m.pivot(index='Block', columns='WR', values=met).dropna()
+                if len(piv) >= 2 and len(piv.columns) >= 2:
+                    try:
+                        _, p = friedmanchisquare(*[piv[c] for c in piv.columns])
+                        p_vals[met] = p
+                    except Exception:
+                        pass
+
         # Build grouped bar chart using ploty subplots manually to allow 2x4 grid
-        fig=px.bar(mm,x='WR',y='Val',color='Mod',barmode='group',facet_col='Met',facet_row='Fase',text_auto='.3s',title=f"Sensibilidad Multi-Ventana de Modelos: Train vs Test ({token})",height=800)
+        fig=px.bar(mm,x='WR',y='Val',color='Mod',barmode='group',facet_col='Met',facet_row='Fase',text_auto='.3s',title=f"Sensibilidad Multi-Ventana de Modelos e Inferencia Estadística ({token})",height=800)
         
         fig.update_layout(template='plotly_white',title_x=0.5,legend=dict(orientation="h",yanchor="bottom",y=1.02,xanchor="center",x=0.5))
         fig.update_yaxes(matches=None)
+        
+        # Inject p-values into annotations
+        for a in fig.layout.annotations:
+            if 'Met=' in a.text:
+                met_name = a.text.split('=')[1]
+                p = p_vals.get(met_name)
+                if p is not None:
+                    sig = "⭐" if p < 0.05 else "❌"
+                    a.text = f"{met_name} (Friedman p={p:.3f} {sig})"
+                else:
+                    a.text = met_name
+            elif 'Fase=' in a.text:
+                a.text = f"<b>{a.text.split('=')[1]}</b>"
         
         for r,fase in enumerate(['Test','Train (OOF)']):
             for c,met in enumerate(['MSE','RMSE','MAE','R2']):
