@@ -154,7 +154,7 @@ def main():
         from plotly.subplots import make_subplots
 
         # We will create two sets of traces, one for Train and one for Test
-        fig = make_subplots(rows=1, cols=4, subplot_titles=['MSE','RMSE','MAE','R2'], horizontal_spacing=0.07)
+        fig = make_subplots(rows=2, cols=2, subplot_titles=['MSE','RMSE','MAE','R2'], horizontal_spacing=0.1, vertical_spacing=0.15)
         
         phases = ['Train (OOF)', 'Test']
         metrics = ['MSE','RMSE','MAE','R2']
@@ -178,7 +178,8 @@ def main():
                         visible=(fase=='Train (OOF)'),
                         marker=dict(color=['#2ecc71' if (abs(v-bv)<1e-9) else '#D3D3D3' for v in mod_data[met]])
                     )
-                    fig.add_trace(trace, row=1, col=m_idx)
+                    r, c = ((m_idx-1)//2)+1, ((m_idx-1)%2)+1
+                    fig.add_trace(trace, row=r, col=c)
                     phase_traces.append(True)
             all_traces.append(phase_traces)
 
@@ -196,15 +197,16 @@ def main():
             for i, met in enumerate(metrics):
                 p = p_vals.get(current_fase, {}).get(met)
                 sig = f" (p={p:.3f} {'⭐' if p < 0.05 else '❌'})" if p is not None else ""
-                new_annotations.append(dict(text=f"<b>{met}</b>{sig}", xref="paper", yref="paper", x=(i*0.25)+0.1, y=1.05, showarrow=False, font=dict(size=14)))
+                r, c = (i//2), (i%2)
+                new_annotations.append(dict(text=f"<b>{met}</b>{sig}", xref="paper", yref="paper", x=0.25+(c*0.5), y=1.0 - (r*0.55) + 0.05, showarrow=False, font=dict(size=14), xanchor='center'))
             return [{"visible": vis}, {"annotations": new_annotations, "title": title}]
 
         fig.update_layout(
             title=f"<b>Análisis de Sensibilidad de Ventanas ({token})</b>",
             template='plotly_white',
-            height=600,
-            margin=dict(t=150, b=50),
-            legend=dict(orientation="h", yanchor="bottom", y=1.1, xanchor="center", x=0.5),
+            height=800,
+            margin=dict(t=150, b=50, l=50, r=50),
+            legend=dict(orientation="h", yanchor="bottom", y=1.05, xanchor="center", x=0.5),
             updatemenus=[dict(
                 type="buttons", direction="right", active=0, x=0.5, y=1.25, xanchor="center",
                 buttons=[
