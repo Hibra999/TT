@@ -176,7 +176,7 @@ def main():
                         text=mod_data[met], texttemplate='%{y:.3s}', textposition='auto',
                         legendgroup=mod, showlegend=(m_idx==1 and f_idx==0),
                         visible=(fase=='Train (OOF)'),
-                        marker=dict(color=['#2ecc71' if (abs(v-bv)<1e-9) else None for v in mod_data[met]])
+                        marker=dict(color=['#2ecc71' if (abs(v-bv)<1e-9) else '#D3D3D3' for v in mod_data[met]])
                     )
                     fig.add_trace(trace, row=1, col=m_idx)
                     phase_traces.append(True)
