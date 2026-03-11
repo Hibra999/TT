@@ -47,7 +47,7 @@ def main():
     yt=pd.Series(st.transform(yte_r.values.reshape(-1,1)).flatten(),name='lc')
     
     dv=torch.device('cuda' if torch.cuda.is_available() else 'cpu');m=[]
-    v_rt=[0.3, 0.4, 0.42, 0.45, 0.48, 0.5, 0.6, 0.7];cp=df['Close'].values;sc=st.inverse_transform
+    v_rt=[0.3, 0.4, 0.45, 0.5, 0.6, 0.7];cp=df['Close'].values;sc=st.inverse_transform
     preload_moirai_module(model_size='small')
     
     for wr in v_rt:
@@ -178,7 +178,7 @@ def main():
                     trace = go.Bar(
                         x=mod_data['WR'], y=mod_data[met], name=mod,
                         text=mod_data[met], texttemplate='%{y:.4f}', textposition='outside',
-                        legendgroup=mod, showlegend=(m_idx==1 and f_idx==0),
+                        legendgroup=mod, showlegend=(m_idx==1), # Show legend for both sets (visible logic handles visibility)
                         visible=(fase=='Train (OOF)'),
                         marker=dict(color=color_map.get(mod, '#7f7f7f')),
                         cliponaxis=False
@@ -199,9 +199,9 @@ def main():
             current_fase = 'Train (OOF)' if show_train else 'Test'
             for i, met in enumerate(metrics):
                 p = p_vals.get(current_fase, {}).get(met)
-                sig = f" (p={p:.3f} {'⭐' if p < 0.05 else '❌'})" if p is not None else ""
+                sig = f" (p={p:.4f} *)" if p is not None and p < 0.05 else (f" (p={p:.4f})" if p is not None else "")
                 r, c = (i//2), (i%2)
-                new_annotations.append(dict(text=f"<b>{met}</b>{sig}", xref="paper", yref="paper", x=0.25+(c*0.5), y=1.0 - (r*0.55) + 0.05, showarrow=False, font=dict(size=14), xanchor='center'))
+                new_annotations.append(dict(text=f"<b>{met}</b>{sig}", xref="paper", yref="paper", x=0.25+(c*0.5), y=1.0 - (r*0.55) + 0.06, showarrow=False, font=dict(size=13), xanchor='center'))
             return [{"visible": vis}, {"annotations": new_annotations, "title": title}]
 
         fig.update_layout(
@@ -209,16 +209,16 @@ def main():
             template='plotly_white',
             height=900,
             width=1200,
-            margin=dict(t=150, b=100, l=50, r=50),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
+            margin=dict(t=160, b=100, l=50, r=50),
+            legend=dict(orientation="h", yanchor="bottom", y=1.05, xanchor="center", x=0.5),
             barmode='group',
             bargap=0.15,
             bargroupgap=0.1,
             updatemenus=[dict(
                 type="buttons", direction="right", active=0, x=0.5, y=1.18, xanchor="center",
                 buttons=[
-                    dict(label="🔍 Fase de Entrenamiento (OOF)", method="update", args=get_args(True)),
-                    dict(label="🚀 Fase de Evaluación (Test)", method="update", args=get_args(False))
+                    dict(label="Fase de Entrenamiento (OOF)", method="update", args=get_args(True)),
+                    dict(label="Fase de Evaluación (Test)", method="update", args=get_args(False))
                 ]
             )]
         )
