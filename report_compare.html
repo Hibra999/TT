@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>^GSPC - Comparativa de Ensambles</title>
+<script src="https://cdn.plot.ly/plotly-2.35.0.min.js"></script>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:'Segoe UI',system-ui,sans-serif;background:#ffffff;color:#111;min-height:100vh;padding:24px}
+  .container{max-width:1400px;margin:0 auto}
+  h1{text-align:center;font-size:2.2rem;font-weight:700;color:#000;margin-bottom:8px}
+  .subtitle{text-align:center;color:#666;font-size:.95rem;margin-bottom:32px}
+  .card{background:#fafafa;border:1px solid #ddd;border-radius:16px;padding:24px;margin-bottom:28px;box-shadow:0 2px 8px rgba(0,0,0,.08)}
+  .card h2{font-size:1.3rem;font-weight:600;margin-bottom:16px;color:#222;letter-spacing:.5px}
+  .metrics-table{width:100%;border-collapse:separate;border-spacing:0;border-radius:12px;overflow:hidden}
+  .metrics-table thead th{background:#f0f0f0;color:#000;padding:14px 18px;font-weight:600;text-align:left;font-size:.9rem;text-transform:uppercase;letter-spacing:1px;border-bottom:2px solid #ccc}
+  .metrics-table tbody td{padding:12px 18px;border-bottom:1px solid #eee;font-size:.95rem;font-variant-numeric:tabular-nums}
+  .metrics-table tbody tr:hover{background:#f5f5f5}
+  .metrics-table tbody tr:last-child td{border-bottom:none}
+  .model-badge{display:inline-block;padding:4px 12px;border-radius:20px;font-weight:600;font-size:.85rem;color:#fff}
+  .best-badge{display:inline-block;margin-left:8px;padding:2px 8px;border-radius:10px;background:#eee;color:#000;font-size:.7rem;font-weight:600;border:1px solid #ccc}
+  .metrics-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+  .charts-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:20px}
+  @media(max-width:1024px){.charts-grid{grid-template-columns:1fr}}
+  @media(max-width:768px){.metrics-grid{grid-template-columns:1fr}}
+  footer{text-align:center;color:#999;font-size:.8rem;margin-top:40px;padding:20px}
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>^GSPC - Comparativa: Ensamble Actual vs Ours vs Yu et al.</h1>
+  <p class="subtitle">Predicciones Finales y Modelos Base (Alineados temporalmente)</p>
+  
+  <div class="charts-grid">
+    <div class="card">
+      <h2>Ensamble Actual</h2>
+      <div id="zoom-chart-actual"></div>
+    </div>
+    <div class="card">
+      <h2>Ours (Sin TimeXer)</h2>
+      <div id="zoom-chart-ablation"></div>
+    </div>
+    <div class="card">
+      <h2>Yu et al. [44] 2025</h2>
+      <div id="zoom-chart-sota"></div>
+    </div>
+  </div>
+
+  <div class="card"><h2>Metricas Generales de los Meta Learners</h2>
+    <table class="metrics-table"><thead><tr><th>Modelo</th><th>MSE</th><th>RMSE</th><th>MAE</th><th>R2</th></tr></thead><tbody>
+<tr><td><span class="model-badge" style="background:#e377c2">Ours (Ensamble Actual Sin TimeXer)</span></td><td>2884.207024</td><td>53.704814</td><td>46.075737</td><td>-0.184102</td></tr>
+<tr><td><span class="model-badge" style="background:#d62728">Yu et al. [44] 2025</span></td><td>2834.022417</td><td>53.235537</td><td>46.187128</td><td>-0.163499</td></tr>
+<tr><td><span class="model-badge" style="background:#17becf">Meta LSTM (Ensamble Actual)</span></td><td>2943.398963</td><td>54.253101</td><td>46.261297</td><td>-0.208403</td></tr>
+    </tbody></table></div>
+  <div class="card"><h2>Prediccion sobre LogReturn_MinMax (Variable Objetivo)</h2>
+    <div class="charts-grid">
+      <div id="lr-actual"></div>
+      <div id="lr-ablation"></div>
+      <div id="lr-sota"></div>
+    </div>
+  </div>
+  <div class="card"><h2>Comparacion Visual de Metricas</h2>
+    <div class="metrics-grid">
+      <div id="chart-mse"></div><div id="chart-rmse"></div>
+      <div id="chart-mae"></div><div id="chart-r2"></div>
+    </div>
+  </div>
+  <footer>Generado automaticamente por main_compare.py</footer>
+</div>
+<script>
+const zoomX=[1459, 1460, 1461, 1462, 1463, 1464, 1465, 1466, 1467, 1468, 1469, 1470, 1471, 1472, 1473, 1474, 1475, 1476, 1477, 1478, 1479, 1480, 1481, 1482, 1483, 1484, 1485, 1486, 1487, 1488, 1489, 1490, 1491, 1492, 1493, 1494, 1495, 1496, 1497, 1498, 1499, 1500, 1501, 1502, 1503, 1504, 1505, 1506, 1507, 1508, 1509, 1510, 1511, 1512, 1513, 1514, 1515, 1516, 1517, 1518, 1519, 1520, 1521, 1522, 1523, 1524, 1525, 1526, 1527, 1528, 1529, 1530, 1531, 1532, 1533, 1534, 1535, 1536, 1537, 1538, 1539, 1540, 1541, 1542, 1543, 1544, 1545, 1546, 1547, 1548, 1549, 1550, 1551, 1552];
+const zoomClose=[6699.39990234375, 6738.43994140625, 6791.68994140625, 6875.16015625, 6890.89013671875, 6890.58984375, 6822.33984375, 6840.2001953125, 6851.97021484375, 6771.5498046875, 6796.2900390625, 6720.31982421875, 6728.7998046875, 6832.43017578125, 6846.60986328125, 6850.919921875, 6737.490234375, 6734.10986328125, 6672.41015625, 6617.31982421875, 6642.16015625, 6538.759765625, 6602.990234375, 6705.1201171875, 6765.8798828125, 6812.60986328125, 6849.08984375, 6812.6298828125, 6829.3701171875, 6849.72021484375, 6857.1201171875, 6870.39990234375, 6846.509765625, 6840.509765625, 6886.68017578125, 6901.0, 6827.41015625, 6816.509765625, 6800.259765625, 6721.43017578125, 6774.759765625, 6834.5, 6878.490234375, 6909.7900390625, 6932.0498046875, 6929.93994140625, 6905.740234375, 6896.240234375, 6845.5, 6858.47021484375, 6902.0498046875, 6944.81982421875, 6920.93017578125, 6921.4599609375, 6966.27978515625, 6977.27001953125, 6963.740234375, 6926.60009765625, 6944.47021484375, 6940.009765625, 6796.85986328125, 6875.6201171875, 6913.35009765625, 6915.60986328125, 6950.22998046875, 6978.60009765625, 6978.02978515625, 6969.009765625, 6939.02978515625, 6976.43994140625, 6917.81005859375, 6882.72021484375, 6798.39990234375, 6932.2998046875, 6964.81982421875, 6941.81005859375, 6941.47021484375, 6832.759765625, 6836.169921875, 6843.22021484375, 6881.31005859375, 6861.89013671875, 6909.509765625, 6837.75, 6890.06982421875, 6946.1298828125, 6908.85986328125, 6878.8798828125, 6881.6201171875, 6816.6298828125, 6869.5, 6830.7099609375, 6740.02001953125, 6795.990234375];
+const zoomModels={"LGB": {"name": "LightGBM (Base Compartido)", "x": [1538, 1539, 1540, 1541, 1542, 1543, 1544, 1545, 1546, 1547, 1548, 1549, 1550, 1551, 1552], "y": [6841.268362017665, 6848.323913120296, 6886.442164412915, 6867.007759090256, 6914.662902887208, 6842.84961857062, 6895.208463102659, 6951.310331489964, 6914.01251584395, 6884.010176197817, 6886.75245424948, 6821.713749923674, 6874.623297834942, 6835.804329021637, 6745.04675073054], "color": "#1f77b4"}, "CB": {"name": "CatBoost (Base Compartido)", "x": [1538, 1539, 1540, 1541, 1542, 1543, 1544, 1545, 1546, 1547, 1548, 1549, 1550, 1551, 1552], "y": [6818.6808778766745, 6803.578038731233, 6877.807313812926, 6960.462194239504, 6906.350997589349, 6832.615297870187, 6899.923899913382, 6967.432540227032, 6918.425256803661, 6978.921773415278, 6980.475598769395, 6841.584490732428, 6824.29897244437, 6841.72475845537, 6771.915780874281], "color": "#2ca02c"}, "TX": {"name": "TimeXer (Base Actual)", "x": [1538, 1539, 1540, 1541, 1542, 1543, 1544, 1545, 1546, 1547, 1548, 1549, 1550, 1551, 1552], "y": [6847.187093470188, 6854.210555996741, 6891.249917301421, 6872.88534747021, 6920.003497088806, 6848.892797148156, 6901.39423939922, 6956.229512008812, 6918.121769354215, 6888.259727771893, 6891.237439420963, 6826.274087433563, 6878.694040602985, 6842.269055236753, 6751.042216748332], "color": "#9467bd"}, "MO": {"name": "Moirai-MoE (Base Actual)", "x": [1538, 1539, 1540, 1541, 1542, 1543, 1544, 1545, 1546, 1547, 1548, 1549, 1550, 1551, 1552], "y": [6841.760376012897, 6847.9573023056255, 6888.150038313589, 6888.000443732504, 6933.378645724625, 6849.35487711616, 6903.883945012426, 6959.047815196129, 6916.829722170197, 6883.587155073335, 6890.152082390786, 6822.567735070839, 6877.118760997659, 6837.571120202693, 6748.105666465061], "color": "#ff7f0e"}, "XG": {"name": "XGBoost (Base SOTA)", "x": [1538, 1539, 1540, 1541, 1542, 1543, 1544, 1545, 1546, 1547, 1548, 1549, 1550, 1551, 1552], "y": [6843.5059663816355, 6850.56382517505, 6888.694543975289, 6869.25378215441, 6916.92451273324, 6845.087740123272, 6897.463709897711, 6953.583927775035, 6916.273912964971, 6886.261760318885, 6889.004935299745, 6823.944958472857, 6876.871811747551, 6838.0401462398, 6747.252883460023], "color": "#8c564b"}, "BL": {"name": "Base LSTM (Base SOTA)", "x": [1538, 1539, 1540, 1541, 1542, 1543, 1544, 1545, 1546, 1547, 1548, 1549, 1550, 1551, 1552], "y": [6841.990767243129, 6849.186863907351, 6887.294486266154, 6867.886267867618, 6915.434200564901, 6843.754928277729, 6896.0779486168385, 6952.016298679981, 6914.695838826539, 6884.767916394267, 6887.569754151186, 6822.777540974466, 6875.7179646231325, 6837.033796399683, 6746.665283383968], "color": "#e377c2"}, "MT": {"name": "Meta LSTM (Ensamble Actual)", "x": [1538, 1539, 1540, 1541, 1542, 1543, 1544, 1545, 1546, 1547, 1548, 1549, 1550, 1551, 1552], "y": [6833.9014360837145, 6832.596425248904, 6884.387874687322, 6907.8227651254465, 6917.747082780804, 6841.763274939724, 6900.227655792898, 6960.055767540896, 6916.954590246653, 6918.877328149268, 6922.340124005024, 6829.770470217218, 6857.459408810253, 6839.282565505691, 6756.473379796306], "color": "#17becf"}, "AB": {"name": "Ours (Ensamble Actual Sin TimeXer)", "x": [1538, 1539, 1540, 1541, 1542, 1543, 1544, 1545, 1546, 1547, 1548, 1549, 1550, 1551, 1552], "y": [6834.013563199954, 6833.439219507515, 6884.234402147905, 6905.420363734053, 6918.864113212438, 6841.89366011689, 6899.977302765539, 6959.480761965713, 6916.50888568262, 6914.925179277215, 6918.705285545323, 6828.560284449219, 6858.953403852229, 6838.406695828857, 6755.008399506441], "color": "#e377c2"}, "SM": {"name": "Yu et al. [44] 2025", "x": [1538, 1539, 1540, 1541, 1542, 1543, 1544, 1545, 1546, 1547, 1548, 1549, 1550, 1551, 1552], "y": [6834.246520153948, 6833.906655194955, 6884.131932581449, 6898.714714193517, 6912.439432807326, 6840.009271504184, 6897.367216611139, 6957.248566000518, 6916.027941753082, 6916.218128057688, 6918.6157298556045, 6828.995790055264, 6858.333728896317, 6838.448592288509, 6754.787077304949], "color": "#d62728"}};
+const metricsData=[{"Modelo": "Ours (Ensamble Actual Sin TimeXer)", "MSE": 2884.207024, "RMSE": 53.704814, "MAE": 46.075737, "R2": -0.184102, "Color": "#e377c2"}, {"Modelo": "Yu et al. [44] 2025", "MSE": 2834.022417, "RMSE": 53.235537, "MAE": 46.187128, "R2": -0.163499, "Color": "#d62728"}, {"Modelo": "Meta LSTM (Ensamble Actual)", "MSE": 2943.398963, "RMSE": 54.253101, "MAE": 46.261297, "R2": -0.208403, "Color": "#17becf"}];
+const lrData={"MT": {"idx": [29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43], "y": [0.40180712938308716, 0.3937957286834717, 0.4069156050682068, 0.44773027300834656, 0.41179606318473816, 0.4078308939933777, 0.41364338994026184, 0.4171164035797119, 0.41166162490844727, 0.44200006127357483, 0.44266945123672485, 0.4166117310523987, 0.39248010516166687, 0.41220760345458984, 0.4199709892272949], "name": "Meta LSTM (Ensamble Actual)", "color": "#17becf"}, "AB": {"idx": [29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43], "y": [0.40191471576690674, 0.39460450410842896, 0.40676942467689514, 0.4454494118690491, 0.41285479068756104, 0.4079558551311493, 0.41340547800064087, 0.4165746569633484, 0.4112390875816345, 0.4382534325122833, 0.439225435256958, 0.41544973850250244, 0.3939085304737091, 0.411367803812027, 0.4185490608215332], "name": "Ours (Ensamble Actual Sin TimeXer)", "color": "#e377c2"}, "SM": {"idx": [29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43], "y": [0.40213823318481445, 0.39505302906036377, 0.40667182207107544, 0.43907880783081055, 0.40676310658454895, 0.40614962577819824, 0.4109245836734772, 0.4144711494445801, 0.4107831120491028, 0.43947938084602356, 0.43914055824279785, 0.4158679246902466, 0.3933160901069641, 0.4114079773426056, 0.4183342158794403], "name": "Yu et al. [44] 2025", "color": "#d62728"}, "LGB": {"idx": [29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43], "y": [0.40887197286672977, 0.40887197286672977, 0.40887197286672977, 0.40887197286672977, 0.40887197286672977, 0.40887197286672977, 0.40887197286672977, 0.40887197286672977, 0.40887197286672977, 0.40887197286672977, 0.40887197286672977, 0.40887197286672977, 0.40887197286672977, 0.40887197286672977, 0.40887197286672977], "name": "LightGBM (Base Compartido)", "color": "#1f77b4"}, "CB": {"idx": [29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43], "y": [0.38718653989592083, 0.3658876271474653, 0.4006447876255947, 0.4975085002815724, 0.400985012439734, 0.3990575237009969, 0.41335472784223537, 0.4240625281209377, 0.41305565470916894, 0.4986603047388162, 0.4975085002815724, 0.4279444781235432, 0.36069467469005667, 0.41454865420752285, 0.43494085325255094], "name": "CatBoost (Base Compartido)", "color": "#2ca02c"}, "TX": {"idx": [29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43], "y": [0.4145424962043762, 0.4145059585571289, 0.4134482741355896, 0.4144819974899292, 0.41393452882766724, 0.41466033458709717, 0.41475188732147217, 0.41351062059402466, 0.41276800632476807, 0.4129185378551483, 0.4131409525871277, 0.4132540225982666, 0.4127536118030548, 0.4150702953338623, 0.41469788551330566], "name": "TimeXer (Base Actual)", "color": "#9467bd"}, "MO": {"idx": [29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43], "y": [0.40934354066848755, 0.4085209369659424, 0.4104979932308197, 0.4288870096206665, 0.4265962243080139, 0.4151027202606201, 0.41711699962615967, 0.4161667227745056, 0.41154325008392334, 0.408469021320343, 0.4121081233024597, 0.40969279408454895, 0.4112517833709717, 0.4105665385723114, 0.41184502840042114], "name": "Moirai-MoE (Base Actual)", "color": "#ff7f0e"}, "XG": {"idx": [29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43], "y": [0.41101619601249695, 0.41101619601249695, 0.41101619601249695, 0.41101619601249695, 0.41101619601249695, 0.41101619601249695, 0.41101619601249695, 0.41101619601249695, 0.41101619601249695, 0.41101619601249695, 0.41101619601249695, 0.41101619601249695, 0.41101619601249695, 0.41101619601249695, 0.41101619601249695], "name": "XGBoost (Base SOTA)", "color": "#8c564b"}, "BL": {"idx": [29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43], "y": [0.409564346075058, 0.4096981883049011, 0.409683495759964, 0.4097107946872711, 0.4096033573150635, 0.4097394347190857, 0.4096987843513489, 0.4095378816127777, 0.4095200002193451, 0.40959370136260986, 0.40965011715888977, 0.4098944365978241, 0.4099160134792328, 0.41005122661590576, 0.4104452431201935], "name": "Base LSTM (Base SOTA)", "color": "#e377c2"}, "_real": {"idx": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43], "y": [0.4455169200085821, 0.4444911595896587, 0.38138822949056755, 0.4044853301979059, 0.446307631552825, 0.41432012340213986, 0.39125583006350834, 0.3689178632066819, 0.4208787332971317, 0.3997703438853454, 0.26731506400540117, 0.4795297662578227, 0.4398677296114738, 0.4061264097347241, 0.4367274406307095, 0.430694767577968, 0.4034475096712515, 0.39550187208965976, 0.37571410832606217, 0.4392401036665249, 0.3486438822759034, 0.3706380379519609, 0.3231548213438331, 0.5318774404097992, 0.43467191080978584, 0.38228441148395054, 0.40366238360421147, 0.3004782695575292, 0.40725522132484476, 0.41074251470343875, 0.4403800843240462, 0.3854519813676664, 0.4493314521742406, 0.33552642538867206, 0.4539656488526027, 0.45711930509444276, 0.3687054528842803, 0.3754674542845171, 0.40659498113584014, 0.3417626624940699, 0.454645216715503, 0.3668518563547229, 0.3163416034894751, 0.45821067160844775]}};
+const dL={paper_bgcolor:'rgba(0,0,0,0)',plot_bgcolor:'rgba(0,0,0,0)',font:{color:'#333',family:'Segoe UI,system-ui,sans-serif'},xaxis:{gridcolor:'#eee',linecolor:'#ccc'},yaxis:{gridcolor:'#eee',linecolor:'#ccc'},margin:{t:40,r:30,b:50,l:60},legend:{bgcolor:'rgba(0,0,0,0)',font:{size:11},orientation:'h',y:-0.2}};
+
+// Wrapper function para graficar
+function drawChart(divId, titleTxt, keys, metaKey) {
+    const data = [{x:zoomX, y:zoomClose, type:'scatter', mode:'lines', name:'Close (USD)', line:{color:'#000', width:2}}];
+    keys.forEach(k => {
+        if(zoomModels[k] && zoomModels[k].x.length > 0) {
+            let isMeta = (k === metaKey);
+            data.push({
+                x: zoomModels[k].x, 
+                y: zoomModels[k].y, 
+                type: 'scatter', 
+                mode: isMeta ? 'lines+markers' : 'lines', 
+                name: zoomModels[k].name, 
+                line: {color: zoomModels[k].color, width: isMeta ? 2.5 : 1.2, dash: isMeta ? 'solid' : 'dot'}, 
+                marker: {size: isMeta ? 4 : 2, color: zoomModels[k].color}
+            });
+        }
+    });
+    Plotly.newPlot(divId, data, {...dL, title: {text: titleTxt, font: {size: 14, color: '#333'}}, xaxis: {...dL.xaxis, title: 'Indice'}, yaxis: {...dL.yaxis, title: 'USD'}, hovermode: 'x unified'}, {responsive: true});
+}
+
+drawChart('zoom-chart-actual', 'Precio Close vs Actual', ['LGB','CB','TX','MO','MT'], 'MT');
+drawChart('zoom-chart-ablation', 'Precio Close vs Ours', ['LGB','CB','MO','AB'], 'AB');
+drawChart('zoom-chart-sota', 'Precio Close vs Yu et al. 2025', ['LGB','CB','XG','BL','SM'], 'SM');
+
+function drawLR(divId, titleTxt, metaKey, baseKeys) {
+    if(!lrData['_real']) return;
+    const real = lrData['_real'];
+    const data = [
+        {x: real.idx, y: real.y, type:'scatter', mode:'lines', name:'Real (LogReturn_MinMax)', line:{color:'#000', width:2}}
+    ];
+    // Agregar modelos base como lineas delgadas punteadas
+    baseKeys.forEach(bk => {
+        if(lrData[bk]) {
+            data.push({x: lrData[bk].idx, y: lrData[bk].y, type:'scatter', mode:'lines', name: lrData[bk].name, line:{color: lrData[bk].color, width:1.2, dash:'dot'}});
+        }
+    });
+    // Agregar meta-learner como linea gruesa
+    if(lrData[metaKey]) {
+        const pred = lrData[metaKey];
+        data.push({x: pred.idx, y: pred.y, type:'scatter', mode:'lines+markers', name: pred.name, line:{color: pred.color, width:2.5}, marker:{size:3, color: pred.color}});
+    }
+    Plotly.newPlot(divId, data, {...dL, title: {text: titleTxt, font: {size: 14, color: '#333'}}, xaxis: {...dL.xaxis, title: 'Indice Test'}, yaxis: {...dL.yaxis, title: 'LogReturn_MinMax'}, hovermode: 'x unified'}, {responsive: true});
+}
+
+drawLR('lr-actual', 'LogReturn_MinMax: Ensamble Actual', 'MT', ['LGB','CB','TX','MO']);
+drawLR('lr-ablation', 'LogReturn_MinMax: Ours (Sin TimeXer)', 'AB', ['LGB','CB','MO']);
+drawLR('lr-sota', 'LogReturn_MinMax: Yu et al. 2025', 'SM', ['LGB','CB','XG','BL']);
+
+['MSE','RMSE','MAE','R2'].forEach((mn,i)=>{const ids=['chart-mse','chart-rmse','chart-mae','chart-r2'];const titles=['MSE','RMSE','MAE','R2'];
+Plotly.newPlot(ids[i],[{x:metricsData.map(m=>m.Modelo),y:metricsData.map(m=>m[mn]),type:'bar',marker:{color:metricsData.map(m=>m.Color),opacity:.85},text:metricsData.map(m=>m[mn].toFixed(4)),textposition:'outside',textfont:{color:'#333',size:11}}],{...dL,title:{text:titles[i],font:{size:14,color:'#333'}},xaxis:{...dL.xaxis,tickangle:45},showlegend:false,margin:{t:50,r:20,b:150,l:60}},{responsive:true,displayModeBar:false});});
+</script></body></html>
