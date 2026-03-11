@@ -153,35 +153,38 @@ def main():
         import plotly.graph_objects as go
         from plotly.subplots import make_subplots
 
+        # Distinctive color map for models
+        color_map = {
+            'LightGBM': '#1f77b4',
+            'CatBoost': '#ff7f0e',
+            'TimeXer': '#2ca02c',
+            'Moirai-MoE': '#d62728',
+            'Meta LSTM': '#9467bd'
+        }
+        
         # We will create two sets of traces, one for Train and one for Test
-        fig = make_subplots(rows=2, cols=2, subplot_titles=['MSE','RMSE','MAE','R2'], horizontal_spacing=0.1, vertical_spacing=0.15)
+        fig = make_subplots(rows=2, cols=2, subplot_titles=['MSE','RMSE','MAE','R2'], horizontal_spacing=0.12, vertical_spacing=0.18)
         
         phases = ['Train (OOF)', 'Test']
         metrics = ['MSE','RMSE','MAE','R2']
-        all_traces = []
         
         for f_idx, fase in enumerate(phases):
-            phase_traces = []
             f_dm = dm[dm['Fase']==fase]
             
             for m_idx, met in enumerate(metrics, 1):
-                f_mm = f_dm[f_dm['Mod'].isin(f_dm['Mod'].unique())] # Ensure consistent ordering
-                bv = f_dm[f_dm['Mod'].isin(f_dm['Mod'].unique())].melt(id_vars=['WR','Mod'], value_vars=[met])['value']
-                bv = bv.max() if met=='R2' else bv.min()
-                
-                for mod in f_dm['Mod'].unique():
-                    mod_data = f_dm[f_dm['Mod'] == mod]
+                mods_in_phase = f_dm['Mod'].unique()
+                for mod in mods_in_phase:
+                    mod_data = f_dm[f_dm['Mod'] == mod].sort_values('WR')
                     trace = go.Bar(
                         x=mod_data['WR'], y=mod_data[met], name=mod,
-                        text=mod_data[met], texttemplate='%{y:.3s}', textposition='auto',
+                        text=mod_data[met], texttemplate='%{y:.4f}', textposition='outside',
                         legendgroup=mod, showlegend=(m_idx==1 and f_idx==0),
                         visible=(fase=='Train (OOF)'),
-                        marker=dict(color=['#2ecc71' if (abs(v-bv)<1e-9) else '#D3D3D3' for v in mod_data[met]])
+                        marker=dict(color=color_map.get(mod, '#7f7f7f')),
+                        cliponaxis=False
                     )
                     r, c = ((m_idx-1)//2)+1, ((m_idx-1)%2)+1
                     fig.add_trace(trace, row=r, col=c)
-                    phase_traces.append(True)
-            all_traces.append(phase_traces)
 
         # Update layout with interactive buttons
         n_train = len(dm[dm['Fase']=='Train (OOF)']['Mod'].unique()) * 4
@@ -204,11 +207,15 @@ def main():
         fig.update_layout(
             title=f"<b>Análisis de Sensibilidad de Ventanas ({token})</b>",
             template='plotly_white',
-            height=800,
-            margin=dict(t=150, b=50, l=50, r=50),
-            legend=dict(orientation="h", yanchor="bottom", y=1.05, xanchor="center", x=0.5),
+            height=900,
+            width=1200,
+            margin=dict(t=150, b=100, l=50, r=50),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
+            barmode='group',
+            bargap=0.15,
+            bargroupgap=0.1,
             updatemenus=[dict(
-                type="buttons", direction="right", active=0, x=0.5, y=1.25, xanchor="center",
+                type="buttons", direction="right", active=0, x=0.5, y=1.18, xanchor="center",
                 buttons=[
                     dict(label="🔍 Fase de Entrenamiento (OOF)", method="update", args=get_args(True)),
                     dict(label="🚀 Fase de Evaluación (Test)", method="update", args=get_args(False))
@@ -219,8 +226,8 @@ def main():
         # Initialize with Train annotations
         initial_args = get_args(True)
         fig.update_layout(annotations=initial_args[1]['annotations'])
-        fig.update_yaxes(matches=None, showgrid=True, gridcolor='lightgrey')
-        fig.update_xaxes(title_text="Window Ratio")
+        fig.update_yaxes(matches=None, showgrid=True, gridcolor='lightgrey', title_standoff=10)
+        fig.update_xaxes(title_text="Window Ratio", tickmode='linear', dtick=0.1, tickangle=45)
 
         fig.write_html(out)
         print(f"Reporte Interactivo generado: {out}")
