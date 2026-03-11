@@ -229,7 +229,193 @@ def main():
         fig.update_yaxes(matches=None, showgrid=True, gridcolor='lightgrey', title_standoff=10)
         fig.update_xaxes(title_text="Window Ratio", tickmode='linear', dtick=0.1, tickangle=45)
 
-        fig.write_html(out)
-        print(f"Reporte Interactivo generado: {out}")
+        # Generate Premium HTML Report
+        html_content = fig.to_html(include_plotlyjs='cdn', full_html=False)
+        
+        premium_html = f"""<!DOCTYPE html>
+<html lang="es" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard de Métricas - {token}</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <style>
+        :root {{
+            --bg-color: #f8fafc;
+            --card-bg: rgba(255, 255, 255, 0.8);
+            --text-main: #1e293b;
+            --text-muted: #64748b;
+            --accent: #3b82f6;
+            --border: #e2e8f0;
+            --glass-border: rgba(255, 255, 255, 0.3);
+            --shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+        }}
+
+        [data-theme="dark"] {{
+            --bg-color: #0f172a;
+            --card-bg: rgba(30, 41, 59, 0.7);
+            --text-main: #f1f5f9;
+            --text-muted: #94a3b8;
+            --accent: #60a5fa;
+            --border: #334155;
+            --glass-border: rgba(255, 255, 255, 0.1);
+            --shadow: 0 10px 15px -3px rgb(0 0 0 / 0.3);
+        }}
+
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+        body {{
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            transition: background-color 0.3s ease, color 0.3s ease;
+            min-height: 100vh;
+            padding: 2rem;
+        }}
+
+        .container {{
+            max-width: 1300px;
+            margin: 0 auto;
+        }}
+
+        header {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 2.5rem;
+            padding-bottom: 1rem;
+            border-bottom: 1px solid var(--border);
+        }}
+
+        .brand h1 {{ font-size: 1.75rem; font-weight: 700; letter-spacing: -0.025em; }}
+        .brand p {{ color: var(--text-muted); font-size: 0.875rem; margin-top: 0.25rem; }}
+
+        .theme-toggle {{
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            padding: 0.5rem 1rem;
+            border-radius: 9999px;
+            cursor: pointer;
+            color: var(--text-main);
+            font-weight: 600;
+            font-size: 0.875rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            transition: all 0.2s;
+            box-shadow: var(--shadow);
+            backdrop-filter: blur(8px);
+        }}
+        .theme-toggle:hover {{ transform: translateY(-1px); box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1); }}
+
+        .dashboard-card {{
+            background: var(--card-bg);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid var(--glass-border);
+            border-radius: 1.5rem;
+            padding: 1.5rem;
+            box-shadow: var(--shadow);
+            margin-bottom: 2rem;
+            transition: transform 0.2s ease;
+        }}
+
+        .info-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }}
+
+        .stat-card {{
+            padding: 1.25rem;
+            background: rgba(255,255,255,0.03);
+            border-radius: 1rem;
+            border: 1px solid var(--border);
+        }}
+        .stat-card span {{ font-size: 0.75rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; }}
+        .stat-card h3 {{ font-size: 1.25rem; margin-top: 0.5rem; }}
+
+        footer {{
+            margin-top: 4rem;
+            text-align: center;
+            color: var(--text-muted);
+            font-size: 0.875rem;
+        }}
+
+        /* Plotly Customization Overrides */
+        .js-plotly-plot {{ background: transparent !important; }}
+        
+        @keyframes fadeIn {{
+            from {{ opacity: 0; transform: translateY(10px); }}
+            to {{ opacity: 1; transform: translateY(0); }}
+        }}
+        .container {{ animation: fadeIn 0.6s ease-out; }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="brand">
+                <h1>{token} Dashboard</h1>
+                <p>Análisis de Sensibilidad de Ventanas y Comparativa de Modelos</p>
+            </div>
+            <button class="theme-toggle" onclick="toggleTheme()">
+                <span id="theme-icon">🌙</span> Dark Mode
+            </button>
+        </header>
+
+        <div class="dashboard-card">
+            {html_content}
+        </div>
+
+        <footer>
+            Generado por Antigravity AI &bull; {token} Market Analysis &bull; 2024
+        </footer>
+    </div>
+
+    <script>
+        function toggleTheme() {{
+            const html = document.documentElement;
+            const icon = document.getElementById('theme-icon');
+            const btnText = document.querySelector('.theme-toggle');
+            
+            if (html.getAttribute('data-theme') === 'light') {{
+                html.setAttribute('data-theme', 'dark');
+                icon.innerText = '☀️';
+                btnText.innerHTML = '<span>☀️</span> Light Mode';
+                updatePlotlyTheme(true);
+            }} else {{
+                html.setAttribute('data-theme', 'light');
+                icon.innerText = '🌙';
+                btnText.innerHTML = '<span>🌙</span> Dark Mode';
+                updatePlotlyTheme(false);
+            }}
+        }}
+
+        function updatePlotlyTheme(isDark) {{
+            const plots = document.querySelectorAll('.js-plotly-plot');
+            const layout = {{
+                paper_bgcolor: 'rgba(0,0,0,0)',
+                plot_bgcolor: 'rgba(0,0,0,0)',
+                font: {{ color: isDark ? '#f1f5f9' : '#1e293b' }}
+            }};
+            
+            plots.forEach(plot => {{
+                Plotly.relayout(plot, layout);
+            }});
+        }}
+
+        // Initial check for system preference
+        if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {{
+            // toggleTheme(); // Uncomment to auto-switch to dark
+        }}
+    </script>
+</body>
+</html>"""
+        
+        with open(out, 'w', encoding='utf-8') as f:
+            f.write(premium_html)
+        print(f"Reporte Premium generado correctamente: {out}")
 
 if __name__=="__main__":main()
