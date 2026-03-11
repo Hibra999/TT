@@ -163,7 +163,7 @@ def main():
         }
         
         # We will create two sets of traces, one for Train and one for Test
-        fig = make_subplots(rows=2, cols=2, subplot_titles=['MSE','RMSE','MAE','R2'], horizontal_spacing=0.12, vertical_spacing=0.18)
+        fig = make_subplots(rows=2, cols=2, subplot_titles=['MSE','RMSE','MAE','R2'], horizontal_spacing=0.12, vertical_spacing=0.22)
         
         phases = ['Train (OOF)', 'Test']
         metrics = ['MSE','RMSE','MAE','R2']
@@ -201,7 +201,7 @@ def main():
                 p = p_vals.get(current_fase, {}).get(met)
                 sig = f" (p={p:.4f} *)" if p is not None and p < 0.05 else (f" (p={p:.4f})" if p is not None else "")
                 r, c = (i//2), (i%2)
-                new_annotations.append(dict(text=f"<b>{met}</b>{sig}", xref="paper", yref="paper", x=0.25+(c*0.5), y=1.0 - (r*0.55) + 0.06, showarrow=False, font=dict(size=13), xanchor='center'))
+                new_annotations.append(dict(text=f"<b>{met}</b>{sig}", xref="paper", yref="paper", x=0.25+(c*0.5), y=1.0 - (r*0.58) + 0.08, showarrow=False, font=dict(size=13), xanchor='center'))
             return [{"visible": vis}, {"annotations": new_annotations, "title": title}]
 
         fig.update_layout(
@@ -230,6 +230,7 @@ def main():
         fig.update_xaxes(title_text="Window Ratio", tickmode='linear', dtick=0.1, tickangle=45)
 
         # Generate Premium HTML Report
+        model_legend_html = "".join([f'<span class="model-badge" style="background:{color}">{model}</span>' for model, color in color_map.items()])
         html_content = fig.to_html(include_plotlyjs='cdn', full_html=False)
         
         premium_html = f"""<!DOCTYPE html>
@@ -319,6 +320,18 @@ def main():
             margin-bottom: 2rem;
             transition: transform 0.2s ease;
         }}
+        .model-badge {{
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 700;
+            color: white;
+            text-transform: uppercase;
+            letter-spacing: 0.025em;
+            margin: 0.25rem;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }}
 
         .info-grid {{
             display: grid;
@@ -366,6 +379,9 @@ def main():
         </header>
 
         <div class="dashboard-card">
+            <div style="margin-bottom: 1.5rem; display: flex; flex-wrap: wrap; gap: 0.5rem; justify-content: center;">
+                {model_legend_html}
+            </div>
             {html_content}
         </div>
 
