@@ -1,437 +1,549 @@
-import os,warnings,torch;import pandas as pd;import numpy as np;import optuna,plotly.express as px
-from sklearn.preprocessing import MinMaxScaler
-from sklearn.metrics import r2_score
-from numba import njit
-from plotly.subplots import make_subplots
+import pandas as pd; import numpy as np; import optuna; import warnings; import os
+from data.yfinance_data import download_yf; from data.ccxt_data import download_cx; from features.macroeconomics import macroeconomicos
+
+# Modelos actuales
+from model.bases_models.ligthGBM_model import objective_global, train_final_and_predict_test as lgb_predict_test
+from model.bases_models.catboost_model import objective_catboost_global, train_final_and_predict_test as cb_predict_test
+from model.bases_models.timexer_model import objective_timexer_global, train_final_and_predict_test as tx_predict_test
+from model.bases_models.moraiMOE_model import objective_moirai_moe_global, preload_moirai_module, train_final_and_predict_test as moirai_predict_test
+from model.meta_model.lstm_model import optimize_lstm_meta, get_average_weights
+from preprocessing.oof_generators import build_oof_dataframe, collect_oof_predictions
+
+# Modelos SOTA
+from model.sota.stacking_ensemble import (
+    objective_xgboost_global, train_final_xgb,
+    objective_base_lstm_global, train_final_base_lstm,
+    build_oof_dataframe_sota, optimize_stacking_meta
+)
+
+from preprocessing.walk_forward import wfrw; from features.tecnical_indicators import TA; from features.top_n import top_k
+from sklearn.preprocessing import MinMaxScaler; import torch
+
+
+def build_oof_dataframe_ablation(oof_lgb, oof_cb, oof_moirai, y):
+    """Construye OOF para Ensamble Actual SIN TimeXer."""
+    preds_lgb, idx_lgb, _ = collect_oof_predictions(oof_lgb)
+    preds_cb, idx_cb, _ = collect_oof_predictions(oof_cb)
+    preds_moirai, idx_moirai, _ = collect_oof_predictions(oof_moirai)
+    
+    df_lgb = pd.DataFrame({'idx': idx_lgb, 'lgb': preds_lgb})
+    df_cb = pd.DataFrame({'idx': idx_cb, 'catboost': preds_cb})
+    df_moirai = pd.DataFrame({'idx': idx_moirai, 'moirai': preds_moirai})
+    
+    y_array = y.values if isinstance(y, pd.Series) else np.array(y)
+    
+    merged = df_lgb.merge(df_cb, on='idx', how='inner').merge(df_moirai, on='idx', how='inner')
+    merged['target'] = merged['idx'].apply(lambda i: y_array[int(i)] if int(i) < len(y_array) else np.nan)
+    merged = merged.dropna().sort_values('idx').reset_index(drop=True)
+    return merged
+
+
+warnings.filterwarnings("ignore")
 try:
-    from scipy.stats import friedmanchisquare
+    from numba import njit, prange; HAS_NUMBA = True
 except ImportError:
-    friedmanchisquare = None
+    HAS_NUMBA = False
 
-from features.macroeconomics import macroeconomicos
-from features.tecnical_indicators import TA
-from features.top_n import top_k
-from model.bases_models.ligthGBM_model import objective_global,train_final_and_predict_test as t_lgb
-from model.bases_models.catboost_model import objective_catboost_global,train_final_and_predict_test as t_cb
-from model.bases_models.timexer_model import objective_timexer_global,train_final_and_predict_test as t_tx
-from model.bases_models.moraiMOE_model import objective_moirai_moe_global,preload_moirai_module,train_final_and_predict_test as t_mo
-from model.meta_model.lstm_model import optimize_lstm_meta
-from preprocessing.oof_generators import collect_oof_predictions,build_oof_dataframe
-from preprocessing.walk_forward import wfrw
+if HAS_NUMBA:
+    @njit(parallel=True, cache=True)
+    def _recon(yl, cp, n):
+        o = np.empty(n, dtype=np.float64)
+        for i in prange(n): o[i] = cp[i] * np.exp(yl[i])
+        return o
+else:
+    def _recon(yl, cp, n): return cp * np.exp(yl)
 
-warnings.filterwarnings("ignore");optuna.logging.set_verbosity(optuna.logging.ERROR)
+@njit(cache=True)
+def _met_numba(y, p, y_prev):
+    m_ = np.mean((y - p) ** 2)
+    rmse = np.sqrt(m_)
+    mae = np.mean(np.abs(y - p))
+    mape = np.mean(np.abs((y - p) / (y + 1e-8))) * 100
+    st = np.sum((y - np.mean(y)) ** 2)
+    r2 = 1.0 - (np.sum((y - p) ** 2) / st) if st > 0 else 0.0
+    dy = y - y_prev
+    dp = p - y_prev
+    da = np.mean((dy * dp) > 0) * 100
+    return m_, rmse, mae, mape, r2, da
 
-@njit(fastmath=True)
-def fast_metrics(yt,yp):
-    err=yt-yp;mse=np.mean(err**2);mae=np.mean(np.abs(err))
-    return mse,np.sqrt(mse),mae
+def met(y, p, y_prev):
+    y, p, y_prev = np.asarray(y, np.float64), np.asarray(p, np.float64), np.asarray(y_prev, np.float64)
+    mse, rmse, mae, mape, r2, da = _met_numba(y, p, y_prev)
+    return {'MSE': round(mse, 4), 'RMSE': round(rmse, 4), 'MAE': round(mae, 4), 'MAPE(%)': round(mape, 4), 'R2': round(r2, 4), 'DA(%)': round(da, 2)}
 
-def main():
-    bd=os.path.dirname(os.path.abspath(__file__))
-    token="AAPL"
-    f=os.path.join(bd,"data","tokens",f"{token}_2020-2025.csv")
-    if not os.path.exists(f):return print(f"File missing: {f}")
-    df=pd.read_csv(f); lc=np.log(df["Close"]/df["Close"].shift(-1)).dropna().reset_index(drop=True)
-    dff=pd.concat([TA(df).reset_index(drop=True),macroeconomicos(df["Date_final"]).reset_index(drop=True)],axis=1).iloc[1:]
-    ml=min(len(dff),len(lc));dff=dff.iloc[:ml].reset_index(drop=True);lc=lc.iloc[:ml]
-    cd=[c for c in dff.columns if dff[c].max()-dff[c].min()<1e-8];dff=dff.drop(columns=cd).replace([np.inf,-np.inf],0.0)
-    if lc.max()-lc.min()<1e-8:return
-    ts=int(len(dff)*0.9);Xr,yr=dff.iloc[:ts].copy(),lc.iloc[:ts].copy()
-    Xte_r,yte_r=dff.iloc[ts:].copy(),lc.iloc[ts:].copy()
+# Diccionario unificado para reporte (Colores hex para distinguir)
+MDL = {
+    'LGB': ('#1f77b4', 'LightGBM (Base Compartido)'),
+    'CB':  ('#2ca02c', 'CatBoost (Base Compartido)'),
+    'TX':  ('#9467bd', 'TimeXer (Base Actual)'),
+    'MO':  ('#ff7f0e', 'Moirai-MoE (Base Actual)'),
+    'XG':  ('#8c564b', 'XGBoost (Base SOTA)'),
+    'BL':  ('#e377c2', 'Base LSTM (Base SOTA)'),
+    'MT':  ('#17becf', 'Meta LSTM (Ensamble Actual)'),
+    'AB':  ('#f0c2e0', 'Ours (Ensamble Actual Sin TimeXer)'),
+    'SM':  ('#d62728', 'Yu et al. [44] 2025')
+}
+
+# ===== CONFIG =====
+TOKEN = '^GSPC'
+N_LGB, N_CB = 10, 10
+N_TX, N_MO = 10, 10
+N_XG, N_BL = 10, 10
+N_MT, N_AB, N_SM = 10, 10, 10
+
+from datetime import datetime
+train_start = '2020-01-01'
+train_end = '2025-12-31'
+test_start = '2026-01-01'
+test_end = datetime.today().strftime('%Y-%m-%d')
+
+START, END = train_start, test_end
+# ==================
+
+print(f'[1/11] Descargando datos...')
+download_yf(['KO', 'AAPL', 'NVDA', 'JNJ', '^GSPC', 'GC=F', 'CBOE'], START, END)
+download_cx(['BTC/USDT', 'ETH/USDT'], START, END)
+df = pd.read_csv(os.path.join(os.path.dirname(__file__), 'data', 'tokens', f'{TOKEN.replace("/", "-")}_2020-2025.csv'))
+
+# Features
+print(f'[2/11] Construyendo Features (TA + Macro)...')
+df_ta = TA(df); df_ma = macroeconomicos(df['Date_final'])
+
+# MIC
+print(f'[3/11] Selección de Variables (MIC)...')
+target_series = np.log(df['Close'].shift(-1) / df['Close'])
+
+# Alinear fechas de macro con las fechas exactas del dataframe de precios
+df_dates = pd.to_datetime(df['Date_final']).dt.date
+df_ma_aligned = df_ma.reindex(df_dates).ffill().bfill().reset_index(drop=True)
+
+df_ta_r = df_ta.reset_index(drop=True)
+target_series_r = target_series.reset_index(drop=True)
+
+df_combined = pd.concat([df_ta_r, df_ma_aligned], axis=1)
+df_combined['target_lc'] = target_series_r
+df_combined['orig_idx'] = df_combined.index
+
+# Eliminar SOLO los NaNs resultantes de los indicadores técnicos al principio
+# y el último NaN del target shift(-1). No eliminará el final completo.
+df_combined = df_combined.dropna().reset_index(drop=True)
+
+orig_idx_array = df_combined['orig_idx'].values
+lc_r = df_combined['target_lc']
+df_f = df_combined.drop(columns=['target_lc', 'orig_idx'])
+
+drop = [c for c in df_f.columns if df_f[c].max() - df_f[c].min() < 1e-8]
+df_f = df_f.drop(columns=drop).replace([np.inf, -np.inf], 0.0)
+lc_r = lc_r.replace([np.inf, -np.inf], 0.0)
+
+# Dividir por fecha de inicio de test (2026-01-01) en lugar de un %.
+dates = pd.to_datetime(df['Date_final']).iloc[orig_idx_array].reset_index(drop=True)
+mask = dates >= pd.to_datetime(test_start)
+if mask.any():
+    ts = mask.idxmax()
+else:
+    ts = int(len(df_f) * .9)
+
+Xtr, Xte = df_f.iloc[:ts].copy(), df_f.iloc[ts:].copy()
+ytr, yte = lc_r.iloc[:ts].copy(), lc_r.iloc[ts:].copy()
+
+sf = MinMaxScaler()
+Xtr_s = pd.DataFrame(sf.fit_transform(Xtr), columns=Xtr.columns, index=Xtr.index)
+Xte_s = pd.DataFrame(sf.transform(Xte), columns=Xte.columns, index=Xte.index)
+
+sct = MinMaxScaler()
+ytr_s = pd.Series(sct.fit_transform(ytr.values.reshape(-1, 1)).flatten(), index=ytr.index, name='lc')
+yte_s = pd.Series(sct.transform(yte.values.reshape(-1, 1)).flatten(), index=yte.index, name='lc')
+
+feats, mic_v = top_k(Xtr_s, ytr_s, 15)
+Xt, Xe = Xtr_s[feats].reset_index(drop=True), Xte_s[feats].reset_index(drop=True)
+yt, ye = ytr_s.reset_index(drop=True), yte_s.reset_index(drop=True)
+
+# Walk Forward
+print(f'[4/11] Split Walk-Forward...')
+k = 5; sp = wfrw(yt, k=k, fh_val=30)
+
+# Training Base Models
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+print(f'[5/11] Entrenando Modelos Base ({device})...')
+oof_l, oof_c = {}, {}
+print('  > LightGBM (Compartido)...')
+sl = optuna.create_study(direction='minimize')
+sl.optimize(lambda t: objective_global(t, Xt, yt, sp, oof_storage=oof_l), n_trials=N_LGB, n_jobs=1)
+bp_l = oof_l.get('params', sl.best_params)
+
+print('  > CatBoost (Compartido)...')
+sc_ = optuna.create_study(direction='minimize')
+sc_.optimize(lambda t: objective_catboost_global(t, Xt, yt, sp, oof_storage=oof_c), n_trials=N_CB, n_jobs=1)
+bp_c = oof_c.get('params', sc_.best_params)
+
+# Modelos solo del ensamble actual
+oof_t, oof_m = {}, {}
+print('  --- Base Models Ensamble Actual ---')
+print('  > TimeXer...')
+st_ = optuna.create_study(direction='minimize', pruner=optuna.pruners.PercentilePruner(percentile=75.0, n_warmup_steps=2))
+st_.optimize(lambda t: objective_timexer_global(t, Xt, yt, sp, device=device, seq_len=96, pred_len=30, features='MS', oof_storage=oof_t), n_trials=N_TX, n_jobs=1)
+bp_t = st_.best_params
+
+print('  > Moirai-MoE...')
+preload_moirai_module(model_size='small')
+sm = optuna.create_study(direction='minimize')
+sm.optimize(lambda t: objective_moirai_moe_global(t, Xt, yt, sp, device=device, pred_len=30, model_size='small', freq='D', use_full_train=True, oof_storage=oof_m), n_trials=N_MO, n_jobs=1)
+bp_m = sm.best_params
+
+# Modelos solo del SOTA
+oof_x, oof_b = {}, {}
+print('  --- Base Models Ensamble SOTA ---')
+print('  > XGBoost...')
+sx = optuna.create_study(direction='minimize')
+sx.optimize(lambda t: objective_xgboost_global(t, Xt, yt, sp, oof_storage=oof_x), n_trials=N_XG, n_jobs=1)
+bp_x = oof_x.get('params', sx.best_params)
+
+print('  > Base LSTM...')
+sb = optuna.create_study(direction='minimize')
+sb.optimize(lambda t: objective_base_lstm_global(t, Xt, yt, sp, device=device, oof_storage=oof_b), n_trials=N_BL, n_jobs=1)
+bp_b = oof_b.get('params', sb.best_params)
+
+
+# Meta Ensamble Actual
+print(f'[6/11] Entrenando Meta LSTM (Ensamble Actual Completo)...')
+oof_df_actual = build_oof_dataframe(oof_l, oof_c, oof_t, oof_m, yt)
+print(f'  OOF matrix shape: {{oof_df_actual.shape}}')
+meta_model_actual, _, _, bp_mt, _ = optimize_lstm_meta(oof_df_actual, device, n_trials=N_MT)
+ws_meta_actual = bp_mt.get('window_size', 10) if meta_model_actual is not None else 10
+
+# Meta Ensamble Ablation (Sin TimeXer)
+print(f'[7/11] Entrenando Meta LSTM Ours (Sin TimeXer)...')
+oof_df_ablation = build_oof_dataframe_ablation(oof_l, oof_c, oof_m, yt)
+print(f'  OOF matrix shape: {{oof_df_ablation.shape}}')
+meta_model_ablation, _, _, bp_ab, _ = optimize_lstm_meta(oof_df_ablation, device, n_trials=N_AB)
+ws_meta_ablation = bp_ab.get('window_size', 10) if meta_model_ablation is not None else 10
+
+# Meta Ensamble SOTA
+print(f'[8/11] Entrenando Stacking Meta LSTM (Modelo Yu et al.)...')
+oof_df_sota = build_oof_dataframe_sota(oof_l, oof_c, oof_x, oof_b, yt)
+print(f'  OOF matrix shape: {{oof_df_sota.shape}}')
+meta_model_sota, _, _, bp_sm, _ = optimize_stacking_meta(oof_df_sota, device, n_trials=N_SM)
+ws_meta_sota = bp_sm.get('window_size', 10) if meta_model_sota is not None else 10
+
+
+# Generando Predicciones Base
+print(f'[9/11] Predicciones en Set de Prueba (Modelos Base)...')
+pl, _ = lgb_predict_test(Xt, yt, Xe, bp_l)
+pc, _ = cb_predict_test(Xt, yt, Xe, bp_c)
+
+pt, _, _ = tx_predict_test(Xt, yt, Xe, ye, bp_t, device, seq_len=96, pred_len=1, features='MS')
+if len(pt) < len(ye): tmp = np.full(len(ye), np.nan); tmp[len(ye) - len(pt):] = pt; pt = tmp
+
+pm, _ = moirai_predict_test(yt, ye, bp_m, model_size='small', freq='D')
+if len(pm) < len(ye): tmp = np.full(len(ye), np.nan); tmp[len(ye) - len(pm):] = pm; pm = tmp
+
+px, _ = train_final_xgb(Xt, yt, Xe, bp_x)
+pb, _ = train_final_base_lstm(Xt, yt, Xe, bp_b, device)
+
+
+# Generando Predicciones Meta
+print(f'[10/11] Predicciones Ensambles (Meta-Learners)...')
+pmt_actual = np.full(len(ye), np.nan)
+pmt_ablation = np.full(len(ye), np.nan)
+pmt_sota = np.full(len(ye), np.nan)
+
+start_idx = max(ws_meta_actual, ws_meta_ablation, ws_meta_sota) - 1
+
+if meta_model_actual is not None:
+    test_matrix_actual = np.column_stack([pl, pc, pt, pm]).astype(np.float32)
+    meta_model_actual.eval()
+    with torch.no_grad():
+        for i in range(start_idx, len(ye)):
+            window = test_matrix_actual[i - ws_meta_actual + 1:i + 1]
+            if not np.isnan(window).any():
+                x_t = torch.from_numpy(window).unsqueeze(0).to(device)
+                pmt_actual[i] = meta_model_actual(x_t).cpu().item()
+
+if meta_model_ablation is not None:
+    test_matrix_ablation = np.column_stack([pl, pc, pm]).astype(np.float32)
+    meta_model_ablation.eval()
+    with torch.no_grad():
+        for i in range(start_idx, len(ye)):
+            window = test_matrix_ablation[i - ws_meta_ablation + 1:i + 1]
+            if not np.isnan(window).any():
+                x_t = torch.from_numpy(window).unsqueeze(0).to(device)
+                pmt_ablation[i] = meta_model_ablation(x_t).cpu().item()
+
+if meta_model_sota is not None:
+    test_matrix_sota = np.column_stack([pl, pc, px, pb]).astype(np.float32)
+    meta_model_sota.eval()
+    with torch.no_grad():
+        for i in range(start_idx, len(ye)):
+            window = test_matrix_sota[i - ws_meta_sota + 1:i + 1]
+            if not np.isnan(window).any():
+                x_t = torch.from_numpy(window).unsqueeze(0).to(device)
+                pmt_sota[i] = meta_model_sota(x_t).cpu().item()
+
+for arr in [pl, pc, pt, pm, px, pb]:
+    if start_idx < len(arr):
+        arr[:start_idx] = np.nan
+
+
+# Métricas y reconstrucciones
+print(f'[11/11] Calculando Métricas Comparativas y Reporte...')
+yv = ye.values
+n = len(yv)
+
+cp_prices = df['Close'].values
+test_orig_indices = orig_idx_array[ts : ts + n]
+
+# Previous day prices for reconstruction
+prev_prices = cp_prices[test_orig_indices]
+
+# Real prices for the predicted day
+gi_v = test_orig_indices + 1
+valid_gi = gi_v < len(cp_prices)
+
+gi_v = gi_v[valid_gi]
+prev_prices = prev_prices[valid_gi]
+real_prices = cp_prices[gi_v]
+
+def safe_inv_recon(p_raw):
+    p_log = np.full_like(p_raw, np.nan)
+    v_mask = ~np.isnan(p_raw)
+    if v_mask.any():
+        p_log[v_mask] = sct.inverse_transform(p_raw[v_mask].reshape(-1, 1)).flatten()
+    return np.where(v_mask[valid_gi], prev_prices * np.exp(p_log[valid_gi]), np.nan)
+
+preds_p = {
+    'LGB': safe_inv_recon(pl[:len(valid_gi)]),
+    'CB':  safe_inv_recon(pc[:len(valid_gi)]),
+    'TX':  safe_inv_recon(pt[:len(valid_gi)]),
+    'MO':  safe_inv_recon(pm[:len(valid_gi)]),
+    'XG':  safe_inv_recon(px[:len(valid_gi)]),
+    'BL':  safe_inv_recon(pb[:len(valid_gi)]),
+    'MT':  safe_inv_recon(pmt_actual[:len(valid_gi)]),
+    'AB':  safe_inv_recon(pmt_ablation[:len(valid_gi)]),
+    'SM':  safe_inv_recon(pmt_sota[:len(valid_gi)])
+}
+
+mp = []
+for km, v in preds_p.items():
+    if (~np.isnan(v)).any():
+        v_valid = v[~np.isnan(v)]
+        y_valid = real_prices[~np.isnan(v)]
+        y_prev_valid = prev_prices[~np.isnan(v)]
+        if len(v_valid) > 0 and len(y_valid) > 0:
+            mp.append({'Modelo': MDL[km][1], **met(y_valid, v_valid, y_prev_valid)})
+
+# Ordenar el reporte por MAE descendente para mejor visualización
+mp.sort(key=lambda x: x['MAE'])
+
+zs, ze = max(0, int(gi_v.min()) - 50), min(len(cp_prices), int(gi_v.max()) + 50)
+
+# Predicciones raw de meta-learners para métricas sobre LogReturn_MinMax
+meta_raw_preds = {'MT': pmt_actual, 'AB': pmt_ablation, 'SM': pmt_sota}
+# Predicciones raw de modelos base para gráficos LogReturn_MinMax
+base_raw_preds = {'LGB': pl, 'CB': pc, 'TX': pt, 'MO': pm, 'XG': px, 'BL': pb}
+
+import json
+def generate_compare_report(token, cp, gi_v, preds_p, mp, MDL, zs, ze, out_dir, ye_vals=None, meta_raw_preds=None, base_raw_preds=None):
+    """Genera report_compare.html aislador para los Ensambles"""
+    zoom_x = list(range(zs, ze))
+    zoom_close = [float(v) for v in cp[zs:ze]]
     
-    sf,st=MinMaxScaler(),MinMaxScaler();Xs=pd.DataFrame(sf.fit_transform(Xr),columns=Xr.columns)
-    ys=pd.Series(st.fit_transform(yr.values.reshape(-1,1)).flatten(),name='lc')
-    ft,_=top_k(Xs,ys,15);X=Xs[ft].reset_index(drop=True)
+    zoom_models = {}
+    for km, (cl, nm) in MDL.items():
+        v = preds_p[km]
+        m = ~np.isnan(v)
+        if m.any():
+            zoom_models[km] = {'name': nm, 'x': [int(x) for x in gi_v[m]], 'y': [float(y) for y in v[m]], 'color': cl}
     
-    Xt=pd.DataFrame(sf.transform(Xte_r),columns=Xte_r.columns)[ft].reset_index(drop=True)
-    yt=pd.Series(st.transform(yte_r.values.reshape(-1,1)).flatten(),name='lc')
-    
-    dv=torch.device('cuda' if torch.cuda.is_available() else 'cpu');m=[]
-    v_rt=[0.3, 0.4, 0.45, 0.5, 0.6, 0.7];cp=df['Close'].values;sc=st.inverse_transform
-    preload_moirai_module(model_size='small')
-    
-    for wr in v_rt:
-        print(f"Probando Ventana: {wr}")
-        ol,oc,ot,om={},{},{},{};sp=wfrw(ys,k=5,fh_val=30,window_ratio=wr)
-        optuna.create_study().optimize(lambda t:objective_global(t,X,ys,sp,oof_storage=ol),n_trials=2,n_jobs=-1)
-        optuna.create_study().optimize(lambda t:objective_catboost_global(t,X,ys,sp,oof_storage=oc),n_trials=2,n_jobs=-1)
-        optuna.create_study().optimize(lambda t:objective_timexer_global(t,X,ys,sp,device=dv,seq_len=96,pred_len=30,features='MS',oof_storage=ot),n_trials=1)
-        optuna.create_study().optimize(lambda t:objective_moirai_moe_global(t,X,ys,sp,device=dv,pred_len=30,model_size='small',freq='D',use_full_train=True,oof_storage=om),n_trials=1)
+    mp_metas = []
+    # Métricas USD de los Meta Learners (MT, AB, SM) para interpretabilidad
+    for row in mp:
+        r = dict(row)
+        for km, (cl, nm) in MDL.items():
+            if nm == r['Modelo']:
+                r['Color'] = cl
+                if km in ['MT', 'AB', 'SM']:
+                    mp_metas.append(r)
+                break
+    mp_metas.sort(key=lambda x: x['MAE'])
         
-        odf=build_oof_dataframe(ol,oc,ot,om,ys)
-        if len(odf)<20:continue
-        mdl,_,rs,bp_meta,_=optimize_lstm_meta(odf,dv,n_trials=1)
-        ws=bp_meta.get('window_size',10)
-        
-        # VALIDATION SCORING (OOF)
-        vi=np.array(rs['valid_indices']);vi=vi[(vi>0)&(vi<len(cp))]
-        if not len(vi):continue
-        pa=cp[vi-1]
-        pr=pa*np.exp(sc(np.array(rs['targets']).reshape(-1,1)[:len(vi)]).flatten())
-        pm=pa*np.exp(sc(np.array(rs['predictions']).reshape(-1,1)[:len(vi)]).flatten())
-        ms,rm,ma=fast_metrics(pr,pm);m.append({'Fase':'Train (OOF)','WR':wr,'Mod':'Meta LSTM','MSE':ms,'RMSE':rm,'MAE':ma,'R2':r2_score(pr,pm)})
-        
-        def _get(df_c,kws):return next((c for c in df_c.columns if any(k in c.lower() for k in kws)),None)
-        
-        d={'LightGBM':_get(odf,['lgb','light']),'CatBoost':_get(odf,['cb','catboost']),'TimeXer':_get(odf,['tx','timex']),'Moirai-MoE':_get(odf,['moirai','moe'])}
-        for n,c in d.items():
-            if c:
-                pxn=pa*np.exp(sc(odf.loc[vi,c].values.reshape(-1,1)).flatten())
-                ms,rm,ma=fast_metrics(pr,pxn);m.append({'Fase':'Train (OOF)','WR':wr,'Mod':n,'MSE':ms,'RMSE':rm,'MAE':ma,'R2':r2_score(pr,pxn)})
-                
-        # TEST SET PROJECTIONS
-        pl,pc,ptx,pmo=None,None,None,None
-        if 'params' in ol: pl,_=t_lgb(X,ys,Xt,ol['params'])
-        if 'params' in oc: pc,_=t_cb(X,ys,Xt,oc['params'])
-        if 'params' in ot: ptx,tx_idx,_=t_tx(X,ys,Xt,yt,ot['params'],dv,seq_len=96,pred_len=1)
-        if 'params' in om: pmo,mo_idx=t_mo(ys,yt,om['params'],model_size='small',freq='D')
-        
-        # Align Test sets - use OOF column names so Meta-LSTM gets same order
-        tlen=len(yt); oof_m_cols=[c for c in odf.columns if c not in ['idx','target']]
-        # Map: display name -> oof col name
-        col_map={'LightGBM':_get(odf,['lgb','light']),'CatBoost':_get(odf,['cb','catboost']),'TimeXer':_get(odf,['tx','timex']),'Moirai-MoE':_get(odf,['moirai','moe'])}
-        test_map={}
-        if pl is not None and col_map.get('LightGBM'): test_map[col_map['LightGBM']]=pl.flatten()
-        if pc is not None and col_map.get('CatBoost'): test_map[col_map['CatBoost']]=pc.flatten()
-        if ptx is not None and col_map.get('TimeXer'):
-            tx_arr=np.full(tlen,np.nan);tx_arr[tx_idx]=ptx;test_map[col_map['TimeXer']]=tx_arr
-        if pmo is not None and col_map.get('Moirai-MoE'):
-            mo_arr=np.full(tlen,np.nan);mo_arr[mo_idx]=pmo;test_map[col_map['Moirai-MoE']]=mo_arr
-            
-        tdf=pd.DataFrame(test_map); tdf['idx']=np.arange(tlen); tdf['target']=yt.values
-        tdf=tdf.dropna().reset_index(drop=True)
-        if len(tdf)<5: continue
-        
-        # Predict Meta-LSTM in Test (only if all base model columns present)
-        m_cols=[c for c in tdf.columns if c not in ['idx','target']]
-        if mdl and len(tdf)>0 and set(oof_m_cols)==set(m_cols):
-            oof_mat=odf[oof_m_cols].values
-            tt_mat=tdf[oof_m_cols].values
-            comp_mat=np.vstack([oof_mat[-(ws-1):],tt_mat]) if ws>1 and len(oof_mat)>=(ws-1) else tt_mat
-            
-            p_meta=[]
-            with torch.no_grad():
-                for t in range(ws-1,len(comp_mat)):
-                    w_t=comp_mat[t-ws+1:t+1]
-                    t_in=torch.from_numpy(w_t.astype(np.float32)).unsqueeze(0).to(dv)
-                    p_meta.append(float(mdl(t_in)[0].cpu().numpy()))
-            
-            if len(p_meta)==len(tdf):
-                tdf['Meta LSTM']=p_meta
-            
-        # SCORE TEST - map oof col names back to display names
-        rev_map={v:k for k,v in col_map.items() if v}
-        t_vi=tdf['idx'].values+ts
-        t_vi=t_vi[(t_vi>0)&(t_vi<len(cp))]
-        if not len(t_vi):continue
-        t_pa=cp[t_vi-1]
-        t_pr=t_pa*np.exp(sc(tdf['target'].values[:len(t_vi)].reshape(-1,1)).flatten())
-        
-        for tgt in m_cols+(['Meta LSTM'] if 'Meta LSTM' in tdf.columns else []):
-            t_pxn=t_pa*np.exp(sc(tdf[tgt].values[:len(t_vi)].reshape(-1,1)).flatten())
-            ms,rm,ma=fast_metrics(t_pr,t_pxn)
-            display_name=rev_map.get(tgt,tgt)
-            m.append({'Fase':'Test','WR':wr,'Mod':display_name,'MSE':ms,'RMSE':rm,'MAE':ma,'R2':r2_score(t_pr,t_pxn)})
-
-    if m:
-        dm=pd.DataFrame(m);out=os.path.join(bd,"metrics_compare.html")
-        
-        # Friedman Statistical Test per Metric and Phase
-        p_vals = {}
-        if friedmanchisquare is not None:
-            for fase in ['Train (OOF)', 'Test']:
-                p_vals[fase] = {}
-                for met in ['MSE','RMSE','MAE','R2']:
-                    df_m = dm[dm['Fase']==fase].copy()
-                    piv = df_m.pivot(index='Mod', columns='WR', values=met).dropna()
-                    if len(piv) >= 2 and len(piv.columns) >= 2:
-                        try:
-                            _, p = friedmanchisquare(*[piv[c] for c in piv.columns])
-                            p_vals[fase][met] = p
-                        except Exception: pass
-
-        import plotly.graph_objects as go
-        from plotly.subplots import make_subplots
-
-        # Distinctive color map for models
-        color_map = {
-            'LightGBM': '#1f77b4',
-            'CatBoost': '#ff7f0e',
-            'TimeXer': '#2ca02c',
-            'Moirai-MoE': '#d62728',
-            'Meta LSTM': '#9467bd'
-        }
-        
-        # We will create two sets of traces, one for Train and one for Test
-        fig = make_subplots(rows=2, cols=2, subplot_titles=['MSE','RMSE','MAE','R2'], horizontal_spacing=0.12, vertical_spacing=0.22)
-        
-        phases = ['Train (OOF)', 'Test']
-        metrics = ['MSE','RMSE','MAE','R2']
-        
-        for f_idx, fase in enumerate(phases):
-            f_dm = dm[dm['Fase']==fase]
-            
-            for m_idx, met in enumerate(metrics, 1):
-                mods_in_phase = f_dm['Mod'].unique()
-                for mod in mods_in_phase:
-                    mod_data = f_dm[f_dm['Mod'] == mod].sort_values('WR')
-                    trace = go.Bar(
-                        x=mod_data['WR'], y=mod_data[met], name=mod,
-                        text=mod_data[met], texttemplate='%{y:.4f}', textposition='outside',
-                        legendgroup=mod, showlegend=(m_idx==1), # Show legend for both sets (visible logic handles visibility)
-                        visible=(fase=='Train (OOF)'),
-                        marker=dict(color=color_map.get(mod, '#7f7f7f')),
-                        cliponaxis=False
-                    )
-                    r, c = ((m_idx-1)//2)+1, ((m_idx-1)%2)+1
-                    fig.add_trace(trace, row=r, col=c)
-
-        # Update layout with interactive buttons
-        n_train = len(dm[dm['Fase']=='Train (OOF)']['Mod'].unique()) * 4
-        n_test = len(dm[dm['Fase']=='Test']['Mod'].unique()) * 4
-        
-        # Function to generate button args
-        def get_args(show_train):
-            vis = [show_train]*n_train + [(not show_train)]*n_test
-            title = f"<b>{'Validación (OOF)' if show_train else 'Desempeño Real (Test)'} - {token}</b>"
-            # Update annotations (titles) to include Friedman p-values for the active phase
-            new_annotations = []
-            current_fase = 'Train (OOF)' if show_train else 'Test'
-            for i, met in enumerate(metrics):
-                p = p_vals.get(current_fase, {}).get(met)
-                sig = f" (p={p:.4f} *)" if p is not None and p < 0.05 else (f" (p={p:.4f})" if p is not None else "")
-                r, c = (i//2), (i%2)
-                new_annotations.append(dict(text=f"<b>{met}</b>{sig}", xref="paper", yref="paper", x=0.25+(c*0.5), y=1.0 - (r*0.58) + 0.08, showarrow=False, font=dict(size=13), xanchor='center'))
-            return [{"visible": vis}, {"annotations": new_annotations, "title": title}]
-
-        fig.update_layout(
-            title=f"<b>Análisis de Sensibilidad de Ventanas ({token})</b>",
-            template='plotly_white',
-            height=900,
-            width=1200,
-            margin=dict(t=160, b=100, l=50, r=50),
-            legend=dict(orientation="h", yanchor="bottom", y=1.05, xanchor="center", x=0.5),
-            barmode='group',
-            bargap=0.15,
-            bargroupgap=0.1,
-            updatemenus=[dict(
-                type="buttons", direction="right", active=0, x=0.5, y=1.18, xanchor="center",
-                buttons=[
-                    dict(label="Fase de Entrenamiento (OOF)", method="update", args=get_args(True)),
-                    dict(label="Fase de Evaluación (Test)", method="update", args=get_args(False))
-                ]
-            )]
-        )
-
-        # Initialize with Train annotations
-        initial_args = get_args(True)
-        fig.update_layout(annotations=initial_args[1]['annotations'])
-        fig.update_yaxes(matches=None, showgrid=True, gridcolor='lightgrey', title_standoff=10)
-        fig.update_xaxes(title_text="Window Ratio", tickmode='linear', dtick=0.1, tickangle=45)
-
-        # Generate Premium HTML Report
-        model_legend_html = "".join([f'<span class="model-badge" style="background:{color}">{model}</span>' for model, color in color_map.items()])
-        html_content = fig.to_html(include_plotlyjs='cdn', full_html=False)
-        
-        premium_html = f"""<!DOCTYPE html>
-<html lang="es" data-theme="light">
+    html = f"""<!DOCTYPE html>
+<html lang="es">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Dashboard de Métricas - {token}</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
-    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
-    <style>
-        :root {{
-            --bg-color: #f8fafc;
-            --card-bg: rgba(255, 255, 255, 0.8);
-            --text-main: #1e293b;
-            --text-muted: #64748b;
-            --accent: #3b82f6;
-            --border: #e2e8f0;
-            --glass-border: rgba(255, 255, 255, 0.3);
-            --shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
-        }}
-
-        [data-theme="dark"] {{
-            --bg-color: #0f172a;
-            --card-bg: rgba(30, 41, 59, 0.7);
-            --text-main: #f1f5f9;
-            --text-muted: #94a3b8;
-            --accent: #60a5fa;
-            --border: #334155;
-            --glass-border: rgba(255, 255, 255, 0.1);
-            --shadow: 0 10px 15px -3px rgb(0 0 0 / 0.3);
-        }}
-
-        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-        body {{
-            font-family: 'Inter', system-ui, -apple-system, sans-serif;
-            background-color: var(--bg-color);
-            color: var(--text-main);
-            transition: background-color 0.3s ease, color 0.3s ease;
-            min-height: 100vh;
-            padding: 2rem;
-        }}
-
-        .container {{
-            max-width: 1300px;
-            margin: 0 auto;
-        }}
-
-        header {{
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 2.5rem;
-            padding-bottom: 1rem;
-            border-bottom: 1px solid var(--border);
-        }}
-
-        .brand h1 {{ font-size: 1.75rem; font-weight: 700; letter-spacing: -0.025em; }}
-        .brand p {{ color: var(--text-muted); font-size: 0.875rem; margin-top: 0.25rem; }}
-
-        .theme-toggle {{
-            background: var(--card-bg);
-            border: 1px solid var(--border);
-            padding: 0.5rem 1rem;
-            border-radius: 9999px;
-            cursor: pointer;
-            color: var(--text-main);
-            font-weight: 600;
-            font-size: 0.875rem;
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-            transition: all 0.2s;
-            box-shadow: var(--shadow);
-            backdrop-filter: blur(8px);
-        }}
-        .theme-toggle:hover {{ transform: translateY(-1px); box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1); }}
-
-        .dashboard-card {{
-            background: var(--card-bg);
-            backdrop-filter: blur(12px);
-            -webkit-backdrop-filter: blur(12px);
-            border: 1px solid var(--glass-border);
-            border-radius: 1.5rem;
-            padding: 1.5rem;
-            box-shadow: var(--shadow);
-            margin-bottom: 2rem;
-            transition: transform 0.2s ease;
-        }}
-        .model-badge {{
-            display: inline-block;
-            padding: 0.25rem 0.75rem;
-            border-radius: 9999px;
-            font-size: 0.75rem;
-            font-weight: 700;
-            color: white;
-            text-transform: uppercase;
-            letter-spacing: 0.025em;
-            margin: 0.25rem;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        }}
-
-        .info-grid {{
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 1.5rem;
-            margin-bottom: 2rem;
-        }}
-
-        .stat-card {{
-            padding: 1.25rem;
-            background: rgba(255,255,255,0.03);
-            border-radius: 1rem;
-            border: 1px solid var(--border);
-        }}
-        .stat-card span {{ font-size: 0.75rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; }}
-        .stat-card h3 {{ font-size: 1.25rem; margin-top: 0.5rem; }}
-
-        footer {{
-            margin-top: 4rem;
-            text-align: center;
-            color: var(--text-muted);
-            font-size: 0.875rem;
-        }}
-
-        /* Plotly Customization Overrides */
-        .js-plotly-plot {{ background: transparent !important; }}
-        
-        @keyframes fadeIn {{
-            from {{ opacity: 0; transform: translateY(10px); }}
-            to {{ opacity: 1; transform: translateY(0); }}
-        }}
-        .container {{ animation: fadeIn 0.6s ease-out; }}
-    </style>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>{token} - Comparativa de Ensambles</title>
+<script src="https://cdn.plot.ly/plotly-2.35.0.min.js"></script>
+<style>
+  *{{margin:0;padding:0;box-sizing:border-box}}
+  body{{font-family:'Segoe UI',system-ui,sans-serif;background:#ffffff;color:#111;min-height:100vh;padding:24px}}
+  .container{{max-width:1400px;margin:0 auto}}
+  h1{{text-align:center;font-size:2.2rem;font-weight:700;color:#000;margin-bottom:8px}}
+  .subtitle{{text-align:center;color:#666;font-size:.95rem;margin-bottom:32px}}
+  .card{{background:#fafafa;border:1px solid #ddd;border-radius:16px;padding:24px;margin-bottom:28px;box-shadow:0 2px 8px rgba(0,0,0,.08)}}
+  .card h2{{font-size:1.3rem;font-weight:600;margin-bottom:16px;color:#222;letter-spacing:.5px}}
+  .metrics-table{{width:100%;border-collapse:separate;border-spacing:0;border-radius:12px;overflow:hidden}}
+  .metrics-table thead th{{background:#f0f0f0;color:#000;padding:14px 18px;font-weight:600;text-align:left;font-size:.9rem;text-transform:uppercase;letter-spacing:1px;border-bottom:2px solid #ccc}}
+  .metrics-table tbody td{{padding:12px 18px;border-bottom:1px solid #eee;font-size:.95rem;font-variant-numeric:tabular-nums}}
+  .metrics-table tbody tr:hover{{background:#f5f5f5}}
+  .metrics-table tbody tr:last-child td{{border-bottom:none}}
+  .model-badge{{display:inline-block;padding:4px 12px;border-radius:20px;font-weight:600;font-size:.85rem;color:#fff}}
+  .best-badge{{display:inline-block;margin-left:8px;padding:2px 8px;border-radius:10px;background:#eee;color:#000;font-size:.7rem;font-weight:600;border:1px solid #ccc}}
+  .metrics-grid{{display:grid;grid-template-columns:1fr 1fr 1fr;gap:20px}}
+  .charts-grid{{display:grid;grid-template-columns:1fr 1fr 1fr;gap:20px}}
+  @media(max-width:1024px){{.charts-grid{{grid-template-columns:1fr}}}}
+  @media(max-width:768px){{.metrics-grid{{grid-template-columns:1fr}}}}
+  footer{{text-align:center;color:#999;font-size:.8rem;margin-top:40px;padding:20px}}
+</style>
 </head>
 <body>
-    <div class="container">
-        <header>
-            <div class="brand">
-                <h1>{token} Dashboard</h1>
-                <p>Análisis de Sensibilidad de Ventanas y Comparativa de Modelos</p>
-            </div>
-            <button class="theme-toggle" onclick="toggleTheme()">
-                <span id="theme-icon">🌙</span> Dark Mode
-            </button>
-        </header>
-
-        <div class="dashboard-card">
-            <div style="margin-bottom: 1.5rem; display: flex; flex-wrap: wrap; gap: 0.5rem; justify-content: center;">
-                {model_legend_html}
-            </div>
-            {html_content}
-        </div>
-
-        <footer>
-            Generado por Antigravity AI &bull; {token} Market Analysis &bull; 2024
-        </footer>
+<div class="container">
+  <h1>{token} - Comparativa: Ensamble Actual vs Ours vs Yu et al.</h1>
+  <p class="subtitle">Predicciones Finales y métricas sobre el PRECIO REAL (USD) y variaciones</p>
+  
+  <div class="charts-grid">
+    <div class="card">
+      <h2>Ensamble Actual</h2>
+      <div id="zoom-chart-actual"></div>
     </div>
+    <div class="card">
+      <h2>Ours (Sin TimeXer)</h2>
+      <div id="zoom-chart-ablation"></div>
+    </div>
+    <div class="card">
+      <h2>Yu et al. [44] 2025</h2>
+      <div id="zoom-chart-sota"></div>
+    </div>
+  </div>
 
-    <script>
-        function toggleTheme() {{
-            const html = document.documentElement;
-            const icon = document.getElementById('theme-icon');
-            const btnText = document.querySelector('.theme-toggle');
-            
-            if (html.getAttribute('data-theme') === 'light') {{
-                html.setAttribute('data-theme', 'dark');
-                icon.innerText = '☀️';
-                btnText.innerHTML = '<span>☀️</span> Light Mode';
-                updatePlotlyTheme(true);
-            }} else {{
-                html.setAttribute('data-theme', 'light');
-                icon.innerText = '🌙';
-                btnText.innerHTML = '<span>🌙</span> Dark Mode';
-                updatePlotlyTheme(false);
-            }}
-        }}
-
-        function updatePlotlyTheme(isDark) {{
-            const plots = document.querySelectorAll('.js-plotly-plot');
-            const layout = {{
-                paper_bgcolor: 'rgba(0,0,0,0)',
-                plot_bgcolor: 'rgba(0,0,0,0)',
-                font: {{ color: isDark ? '#f1f5f9' : '#1e293b' }}
-            }};
-            
-            plots.forEach(plot => {{
-                Plotly.relayout(plot, layout);
-            }});
-        }}
-
-        // Initial check for system preference
-        if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {{
-            // toggleTheme(); // Uncomment to auto-switch to dark
-        }}
-    </script>
-</body>
-</html>"""
+  <div class="card"><h2>Metricas Generales de los Meta Learners (Evaluadas sobre Precio Real USD)</h2>
+    <table class="metrics-table"><thead><tr><th>Modelo</th><th>MSE</th><th>RMSE</th><th>MAE</th><th>MAPE(%)</th><th>R2</th><th>DA(%)</th></tr></thead><tbody>
+"""
+    best_vals = {}
+    if mp_metas:
+        for mn in ['MSE', 'RMSE', 'MAE', 'MAPE(%)', 'R2', 'DA(%)']:
+            vals = [m_[mn] for m_ in mp_metas]
+            if vals: best_vals[mn] = max(vals) if mn in ['R2', 'DA(%)'] else min(vals)
         
-        with open(out, 'w', encoding='utf-8') as f:
-            f.write(premium_html)
-        print(f"Reporte Premium generado correctamente: {out}")
+    def _fmt(val, mn):
+        if mn not in best_vals: return f'{val:.4f}'
+        return f'{val:.4f}'
+        
+    for i, m_ in enumerate(mp_metas):
+        html += f'<tr><td><span class="model-badge" style="background:{m_["Color"]}">{m_["Modelo"]}</span></td><td>{_fmt(m_["MSE"], "MSE")}</td><td>{_fmt(m_["RMSE"], "RMSE")}</td><td>{_fmt(m_["MAE"], "MAE")}</td><td>{_fmt(m_["MAPE(%)"], "MAPE(%)")}</td><td>{_fmt(m_["R2"], "R2")}</td><td>{_fmt(m_["DA(%)"], "DA(%)")}</td></tr>\n'
+        
+    html += """    </tbody></table></div>
+  <div class="card"><h2>Prediccion sobre LogReturn_MinMax (Variable Objetivo)</h2>
+    <div class="charts-grid">
+      <div id="lr-actual"></div>
+      <div id="lr-ablation"></div>
+      <div id="lr-sota"></div>
+    </div>
+  </div>
+  <div class="card"><h2>Comparacion Visual de Metricas</h2>
+    <div class="metrics-grid">
+      <div id="chart-mse"></div><div id="chart-rmse"></div>
+      <div id="chart-mae"></div><div id="chart-mape"></div>
+      <div id="chart-r2"></div><div id="chart-da"></div>
+    </div>
+  </div>
+  <footer>Generado automaticamente por main_compare.py</footer>
+</div>
+<script>
+"""
+    # Datos de series temporales LogReturn_MinMax para cada meta-learner y modelos base
+    lr_data = {}
+    if ye_vals is not None and meta_raw_preds is not None:
+        lr_real = [float(v) for v in ye_vals]
+        lr_idx = list(range(len(ye_vals)))
+        for km in ['MT', 'AB', 'SM']:
+            p_raw = meta_raw_preds.get(km)
+            if p_raw is not None:
+                m_valid = ~np.isnan(p_raw)
+                if m_valid.any():
+                    lr_data[km] = {
+                        'idx': [int(i) for i in np.where(m_valid)[0]],
+                        'y': [float(p) for p in p_raw[m_valid]],
+                        'name': MDL[km][1],
+                        'color': MDL[km][0]
+                    }
+        # Agregar predicciones base (raw LogReturn_MinMax) para cada modelo
+        if base_raw_preds is not None:
+            for km in ['LGB', 'CB', 'TX', 'MO', 'XG', 'BL']:
+                p_raw = base_raw_preds.get(km)
+                if p_raw is not None:
+                    m_valid = ~np.isnan(p_raw)
+                    if m_valid.any():
+                        lr_data[km] = {
+                            'idx': [int(i) for i in np.where(m_valid)[0]],
+                            'y': [float(p) for p in p_raw[m_valid]],
+                            'name': MDL[km][1],
+                            'color': MDL[km][0]
+                        }
+        lr_data['_real'] = {'idx': lr_idx, 'y': lr_real}
 
-if __name__=="__main__":main()
+    html += f"const zoomX={json.dumps(zoom_x)};\nconst zoomClose={json.dumps(zoom_close)};\n"
+    html += f"const zoomModels={json.dumps(zoom_models)};\n"
+    html += f"const metricsData={json.dumps(mp_metas)};\n"
+    html += f"const lrData={json.dumps(lr_data)};\n"
+    
+    html += """const dL={paper_bgcolor:'rgba(0,0,0,0)',plot_bgcolor:'rgba(0,0,0,0)',font:{color:'#333',family:'Segoe UI,system-ui,sans-serif'},xaxis:{gridcolor:'#eee',linecolor:'#ccc'},yaxis:{gridcolor:'#eee',linecolor:'#ccc'},margin:{t:40,r:30,b:50,l:60},legend:{bgcolor:'rgba(0,0,0,0)',font:{size:11},orientation:'h',y:-0.2}};
+
+// Wrapper function para graficar
+function drawChart(divId, titleTxt, keys, metaKey) {
+    const data = [{x:zoomX, y:zoomClose, type:'scatter', mode:'lines', name:'Close (USD)', line:{color:'#000', width:2}}];
+    keys.forEach(k => {
+        if(zoomModels[k] && zoomModels[k].x.length > 0) {
+            let isMeta = (k === metaKey);
+            data.push({
+                x: zoomModels[k].x, 
+                y: zoomModels[k].y, 
+                type: 'scatter', 
+                mode: isMeta ? 'lines+markers' : 'lines', 
+                name: zoomModels[k].name, 
+                line: {color: zoomModels[k].color, width: isMeta ? 2.5 : 1.2, dash: isMeta ? 'solid' : 'dot'}, 
+                marker: {size: isMeta ? 4 : 2, color: zoomModels[k].color}
+            });
+        }
+    });
+    Plotly.newPlot(divId, data, {...dL, title: {text: titleTxt, font: {size: 14, color: '#333'}}, xaxis: {...dL.xaxis, title: 'Indice'}, yaxis: {...dL.yaxis, title: 'USD'}, hovermode: 'x unified'}, {responsive: true});
+}
+
+drawChart('zoom-chart-actual', 'Precio Close vs Actual', ['LGB','CB','TX','MO','MT'], 'MT');
+drawChart('zoom-chart-ablation', 'Precio Close vs Ours', ['LGB','CB','MO','AB'], 'AB');
+drawChart('zoom-chart-sota', 'Precio Close vs Yu et al. 2025', ['LGB','CB','XG','BL','SM'], 'SM');
+
+function drawLR(divId, titleTxt, metaKey, baseKeys) {
+    if(!lrData['_real']) return;
+    const real = lrData['_real'];
+    const data = [
+        {x: real.idx, y: real.y, type:'scatter', mode:'lines', name:'Real (LogReturn_MinMax)', line:{color:'#000', width:2}}
+    ];
+    // Agregar modelos base como lineas delgadas punteadas
+    baseKeys.forEach(bk => {
+        if(lrData[bk]) {
+            data.push({x: lrData[bk].idx, y: lrData[bk].y, type:'scatter', mode:'lines', name: lrData[bk].name, line:{color: lrData[bk].color, width:1.2, dash:'dot'}});
+        }
+    });
+    // Agregar meta-learner como linea gruesa
+    if(lrData[metaKey]) {
+        const pred = lrData[metaKey];
+        data.push({x: pred.idx, y: pred.y, type:'scatter', mode:'lines+markers', name: pred.name, line:{color: pred.color, width:2.5}, marker:{size:3, color: pred.color}});
+    }
+    Plotly.newPlot(divId, data, {...dL, title: {text: titleTxt, font: {size: 14, color: '#333'}}, xaxis: {...dL.xaxis, title: 'Indice Test'}, yaxis: {...dL.yaxis, title: 'LogReturn_MinMax'}, hovermode: 'x unified'}, {responsive: true});
+}
+
+drawLR('lr-actual', 'LogReturn_MinMax: Ensamble Actual', 'MT', ['LGB','CB','TX','MO']);
+drawLR('lr-ablation', 'LogReturn_MinMax: Ours (Sin TimeXer)', 'AB', ['LGB','CB','MO']);
+drawLR('lr-sota', 'LogReturn_MinMax: Yu et al. 2025', 'SM', ['LGB','CB','XG','BL']);
+
+['MSE','RMSE','MAE','MAPE(%)','R2','DA(%)'].forEach((mn,i)=>{
+    const ids=['chart-mse','chart-rmse','chart-mae','chart-mape','chart-r2','chart-da'];
+    const titles=['MSE','RMSE','MAE','MAPE(%)','R2','DA(%)'];
+    Plotly.newPlot(ids[i],[{x:metricsData.map(m=>m.Modelo),y:metricsData.map(m=>m[mn]),type:'bar',marker:{color:metricsData.map(m=>m.Color),opacity:.85},text:metricsData.map(m=>m[mn].toFixed(4)),textposition:'outside',textfont:{color:'#333',size:11}}],{...dL,title:{text:titles[i],font:{size:14,color:'#333'}},xaxis:{...dL.xaxis,tickangle:45},showlegend:false,margin:{t:50,r:20,b:150,l:60}},{responsive:true,displayModeBar:false});
+});
+</script></body></html>"""
+    out_html = os.path.join(out_dir, 'report_compare.html')
+    with open(out_html, 'w', encoding='utf-8') as fh: fh.write(html)
+    print(f'Listo Comparativa Limpia: {out_html}')
+
+generate_compare_report(TOKEN, cp_prices, gi_v, preds_p, mp, MDL, zs, ze, os.path.dirname(__file__), ye_vals=yv, meta_raw_preds=meta_raw_preds, base_raw_preds=base_raw_preds)
