@@ -78,15 +78,15 @@ MDL = {
     'ARIMA_EXT': ('#ffd700', 'ARIMA (Externo)'),
     'RF_EXT': ('#32cd32', 'Random Forest (Externo)'),
     'TRANS_EXT': ('#8a2be2', 'Transformer (Externo)'),
-    'XGB_META_EXT': ('#ff4500', 'Parker et al. 2025')
+    'XGB_META_EXT': ('#ff4500', 'XGBoost Meta (Externo)')
 }
 
 # ===== CONFIG =====
 TOKEN = '^GSPC'
-N_LGB, N_CB = 10, 10
-N_TX, N_MO = 10, 10
-N_XG, N_BL = 10, 10
-N_MT, N_AB, N_SM = 10, 10, 10
+N_LGB, N_CB = 1, 1
+N_TX, N_MO = 1, 1
+N_XG, N_BL = 1, 1
+N_MT, N_AB, N_SM = 1, 1, 1
 
 from datetime import datetime
 train_start = '2020-01-01'
@@ -399,7 +399,7 @@ def generate_compare_report(token, cp, gi_v, pr_r, preds_p, mp, MDL, zs, ze, out
         for km, (cl, nm) in MDL.items():
             if nm == r['Modelo']:
                 r['Color'] = cl
-                if km in ['MT', 'AB', 'SM', 'XGB_META_EXT']:
+                if km in ['MT', 'AB', 'SM']:
                     mp_metas.append(r)
                 break
     mp_metas.sort(key=lambda x: x['MAE'])

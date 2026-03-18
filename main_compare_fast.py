@@ -78,21 +78,21 @@ MDL = {
     'ARIMA_EXT': ('#ffd700', 'ARIMA (Externo)'),
     'RF_EXT': ('#32cd32', 'Random Forest (Externo)'),
     'TRANS_EXT': ('#8a2be2', 'Transformer (Externo)'),
-    'XGB_META_EXT': ('#ff4500', 'Parker et al. 2025')
+    'XGB_META_EXT': ('#ff4500', 'XGBoost Meta (Externo)')
 }
 
 # ===== CONFIG =====
 TOKEN = '^GSPC'
-N_LGB, N_CB = 10, 10
-N_TX, N_MO = 10, 10
-N_XG, N_BL = 10, 10
-N_MT, N_AB, N_SM = 10, 10, 10
+N_LGB, N_CB = 1, 1
+N_TX, N_MO = 1, 1
+N_XG, N_BL = 1, 1
+N_MT, N_AB, N_SM = 1, 1, 1
 
 from datetime import datetime
 train_start = '2020-01-01'
 train_end = '2025-12-31'
-test_start = '2025-06-04' # Sincronizado con el inicio de predicciones externas
-test_end = '2025-12-31'
+test_start = '2026-01-01'
+test_end = datetime.today().strftime('%Y-%m-%d')
 
 START, END = train_start, test_end
 # ==================
@@ -105,18 +105,17 @@ df = pd.read_csv(os.path.join(os.path.dirname(__file__), 'data', 'tokens', f'{TO
 # Cargar predicciones externas (^GSPC_all_models_predictions.csv)
 csv_ext = os.path.join(os.path.dirname(__file__), '^GSPC_all_models_predictions.csv')
 ext_preds_map = {}
-idx_start_ext = None
 if os.path.exists(csv_ext):
     print(f'[1.5/11] Alineando predicciones externas...')
     df_ext = pd.read_csv(csv_ext)
     # Coincidencia por 'Actual' (High)
     for i in range(len(df) - len(df_ext) + 1):
         if np.allclose(df['High'].iloc[i:i+len(df_ext)].values, df_ext['Actual'].values, atol=1e-2):
-            idx_start_ext = i
+            idx_start = i
             for col in ['LSTM', 'GRU', 'ARIMA', 'Random Forest', 'Transformer', 'XGBoost']:
                 key = col.upper().replace(' ', '_') + '_EXT'
                 full_raw = np.full(len(df), np.nan)
-                full_raw[idx_start_ext:idx_start_ext+len(df_ext)] = df_ext[col].values
+                full_raw[idx_start:idx_start+len(df_ext)] = df_ext[col].values
                 ext_preds_map[key] = full_raw
             break
 
@@ -367,11 +366,8 @@ for km, v in preds_p.items():
 # Ordenar el reporte por MAE descendente para mejor visualización
 mp.sort(key=lambda x: x['MAE'])
 
-# Restringir reporte al periodo de predicciones externas si existe, sino ultimo 10%
-if idx_start_ext is not None:
-    zs = idx_start_ext
-else:
-    zs = int(len(cp) * 0.9)
+# Restringir reporte al ultimo 10% del activo S&P500
+zs = int(len(cp) * 0.9)
 ze = len(cp)
 
 # Predicciones raw de meta-learners para métricas sobre LogReturn_MinMax
@@ -399,7 +395,7 @@ def generate_compare_report(token, cp, gi_v, pr_r, preds_p, mp, MDL, zs, ze, out
         for km, (cl, nm) in MDL.items():
             if nm == r['Modelo']:
                 r['Color'] = cl
-                if km in ['MT', 'AB', 'SM', 'XGB_META_EXT']:
+                if km in ['MT', 'AB', 'SM']:
                     mp_metas.append(r)
                 break
     mp_metas.sort(key=lambda x: x['MAE'])
