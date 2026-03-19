@@ -65,6 +65,16 @@ def met(y, p):
     y, p = np.asarray(y, np.float64), np.asarray(p, np.float64); mse, rmse, mae, r2 = _met_numba(y, p)
     return {'MSE': round(mse, 6), 'RMSE': round(rmse, 6), 'MAE': round(mae, 6), 'R2': round(r2, 6)}
 
+def directional_accuracy(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    """
+    Porcentaje de observaciones donde el signo del cambio predicho
+    coincide con el signo del cambio real.
+    Requiere al menos 2 observaciones.
+    """
+    actual_dir    = np.sign(np.diff(y_true))
+    predicted_dir = np.sign(np.diff(y_pred))
+    return float(np.mean(actual_dir == predicted_dir) * 100)
+
 # Diccionario unificado para reporte (Colores hex para distinguir)
 MDL = {
     'LGB': ('#1f77b4', 'LightGBM (Base Compartido)'),
@@ -389,7 +399,8 @@ for km, v in preds_p.items():
         v_valid = v[~np.isnan(v)]
         y_valid = pr_r[~np.isnan(v)]
         if len(v_valid) > 0 and len(y_valid) > 0:
-            mp.append({'Modelo': MDL[km][1], **met(y_valid, v_valid)})
+            da_val = directional_accuracy(y_valid, v_valid) if len(v_valid) >= 2 else 0.0
+            mp.append({'Modelo': MDL[km][1], **met(y_valid, v_valid), 'DA': round(da_val, 2)})
 
 # Ordenar el reporte por MAE descendente para mejor visualización
 mp.sort(key=lambda x: x['MAE'])
@@ -413,6 +424,17 @@ if v_mask.any():
 meta_raw_preds = {'MT': pmt_actual, 'AB': pmt_ablation, 'SM': pmt_sota, 'XGB_META_EXT': pmt_parker}
 # Predicciones raw de modelos base para gráficos LogReturn_MinMax
 base_raw_preds = {'LGB': pl, 'CB': pc, 'TX': pt, 'MO': pm, 'XG': px, 'BL': pb}
+
+# Convertir predicciones externas (USD) a LogReturn_MinMax para gráficos LR
+for ext_key in ['LSTM_EXT', 'GRU_EXT', 'ARIMA_EXT', 'RF_EXT', 'TRANS_EXT']:
+    p_usd_ext = preds_p.get(ext_key)
+    if p_usd_ext is not None:
+        pmt_ext = np.full(len(ye), np.nan)
+        v_mask_ext = ~np.isnan(p_usd_ext)
+        if v_mask_ext.any():
+            p_log_ext = np.log(p_usd_ext[v_mask_ext] / prev[v_mask_ext])
+            pmt_ext[v_mask_ext] = sct.transform(p_log_ext.reshape(-1, 1)).flatten()
+        base_raw_preds[ext_key] = pmt_ext
 
 import json
 def generate_compare_report(token, cp, gi_v, pr_r, preds_p, mp, MDL, zs, ze, out_dir, ye_vals=None, meta_raw_preds=None, base_raw_preds=None):
@@ -469,12 +491,12 @@ def generate_compare_report(token, cp, gi_v, pr_r, preds_p, mp, MDL, zs, ze, out
 </head>
 <body>
 <div class="container">
-  <h1>{token} - Comparativa: Ensamble Actual vs Ours vs Yu et al.</h1>
+  <h1>{token} - Comparativa: Ours vs SOTA. </h1>
   <p class="subtitle">Predicciones Finales y Modelos Base (Alineados temporalmente)</p>
   
   <div class="charts-grid">
     <div class="card">
-      <h2>Ensamble Actual</h2>
+      <h2>Ours</h2>
       <div id="zoom-chart-actual"></div>
     </div>
     <div class="card">
@@ -545,7 +567,7 @@ def generate_compare_report(token, cp, gi_v, pr_r, preds_p, mp, MDL, zs, ze, out
                     }
         # Agregar predicciones base (raw LogReturn_MinMax) para cada modelo
         if base_raw_preds is not None:
-            for km in ['LGB', 'CB', 'TX', 'MO', 'XG', 'BL']:
+            for km in ['LGB', 'CB', 'TX', 'MO', 'XG', 'BL', 'LSTM_EXT', 'GRU_EXT', 'ARIMA_EXT', 'RF_EXT', 'TRANS_EXT']:
                 p_raw = base_raw_preds.get(km)
                 if p_raw is not None:
                     m_valid = ~np.isnan(p_raw)
@@ -567,53 +589,66 @@ def generate_compare_report(token, cp, gi_v, pr_r, preds_p, mp, MDL, zs, ze, out
 
 // Wrapper function para graficar
 function drawChart(divId, titleTxt, keys, metaKey) {
-    const data = [{x:zoomX, y:zoomClose, type:'scatter', mode:'lines', name:'Close (USD)', line:{color:'#000', width:2}}];
+    // zorder: base models (fondo), meta model (segundo), Close (USD) al frente
+    const data = [];
+    // 1) Modelos base al fondo
     keys.forEach(k => {
+        if(k === metaKey) return;
         if(zoomModels[k] && zoomModels[k].x.length > 0) {
-            let isMeta = (k === metaKey);
             data.push({
-                x: zoomModels[k].x, 
-                y: zoomModels[k].y, 
-                type: 'scatter', 
-                mode: isMeta ? 'lines+markers' : 'lines', 
-                name: zoomModels[k].name, 
-                line: {color: zoomModels[k].color, width: isMeta ? 2.5 : 1.2, dash: isMeta ? 'solid' : 'dot'}, 
-                marker: {size: isMeta ? 4 : 2, color: zoomModels[k].color}
+                x: zoomModels[k].x, y: zoomModels[k].y,
+                type: 'scatter', mode: 'lines',
+                name: zoomModels[k].name,
+                line: {color: zoomModels[k].color, width: 1.2, dash: 'dot'},
+                marker: {size: 2, color: zoomModels[k].color}
             });
         }
     });
+    // 2) Meta modelo en segundo plano
+    if(zoomModels[metaKey] && zoomModels[metaKey].x.length > 0) {
+        data.push({
+            x: zoomModels[metaKey].x, y: zoomModels[metaKey].y,
+            type: 'scatter', mode: 'lines+markers',
+            name: zoomModels[metaKey].name,
+            line: {color: zoomModels[metaKey].color, width: 2.5},
+            marker: {size: 4, color: zoomModels[metaKey].color}
+        });
+    }
+    // 3) Close (USD) siempre al frente (zorder máximo)
+    data.push({x:zoomX, y:zoomClose, type:'scatter', mode:'lines', name:'Close (USD)', line:{color:'#000', width:2}});
     Plotly.newPlot(divId, data, {...dL, title: {text: titleTxt, font: {size: 14, color: '#333'}}, xaxis: {...dL.xaxis, title: 'Indice'}, yaxis: {...dL.yaxis, title: 'USD'}, hovermode: 'x unified'}, {responsive: true});
 }
 
-drawChart('zoom-chart-actual', 'Precio Close vs Actual', ['LGB','CB','TX','MO','MT', 'LSTM_EXT', 'GRU_EXT'], 'MT');
-drawChart('zoom-chart-ablation', 'Precio Close vs Ours', ['LGB','CB','MO','AB', 'ARIMA_EXT', 'RF_EXT'], 'AB');
-drawChart('zoom-chart-sota', 'Precio Close vs Yu et al. 2025', ['LGB','CB','XG','BL','SM', 'TRANS_EXT'], 'SM');
-drawChart('zoom-chart-parker', 'Precio Close vs Parker et al. 2025', ['LGB','CB','XGB_META_EXT'], 'XGB_META_EXT');
+drawChart('zoom-chart-actual', 'Precio Close vs Actual', ['LGB','CB','TX','MO','MT'], 'MT');
+drawChart('zoom-chart-ablation', 'Precio Close vs Ours', ['LGB','CB','MO','AB'], 'AB');
+drawChart('zoom-chart-sota', 'Precio Close vs Yu et al. 2025', ['LGB','CB','XG','BL','SM'], 'SM');
+drawChart('zoom-chart-parker', 'Precio Close vs Parker et al. 2025', ['LSTM_EXT','GRU_EXT','ARIMA_EXT','RF_EXT','TRANS_EXT','XGB_META_EXT'], 'XGB_META_EXT');
 
 function drawLR(divId, titleTxt, metaKey, baseKeys) {
     if(!lrData['_real']) return;
     const real = lrData['_real'];
-    const data = [
-        {x: real.idx, y: real.y, type:'scatter', mode:'lines', name:'Real (LogReturn_MinMax)', line:{color:'#000', width:2}}
-    ];
-    // Agregar modelos base como lineas delgadas punteadas
+    // zorder: base models (fondo), meta model (segundo), Real al frente
+    const data = [];
+    // 1) Modelos base al fondo
     baseKeys.forEach(bk => {
         if(lrData[bk]) {
             data.push({x: lrData[bk].idx, y: lrData[bk].y, type:'scatter', mode:'lines', name: lrData[bk].name, line:{color: lrData[bk].color, width:1.2, dash:'dot'}});
         }
     });
-    // Agregar meta-learner como linea gruesa
+    // 2) Meta-learner en segundo plano
     if(lrData[metaKey]) {
         const pred = lrData[metaKey];
         data.push({x: pred.idx, y: pred.y, type:'scatter', mode:'lines+markers', name: pred.name, line:{color: pred.color, width:2.5}, marker:{size:3, color: pred.color}});
     }
+    // 3) Real (LogReturn_MinMax) siempre al frente (zorder máximo)
+    data.push({x: real.idx, y: real.y, type:'scatter', mode:'lines', name:'Real (LogReturn_MinMax)', line:{color:'#000', width:2}});
     Plotly.newPlot(divId, data, {...dL, title: {text: titleTxt, font: {size: 14, color: '#333'}}, xaxis: {...dL.xaxis, title: 'Indice Test'}, yaxis: {...dL.yaxis, title: 'LogReturn_MinMax'}, hovermode: 'x unified'}, {responsive: true});
 }
 
 drawLR('lr-actual', 'LogReturn_MinMax: Ensamble Actual', 'MT', ['LGB','CB','TX','MO']);
 drawLR('lr-ablation', 'LogReturn_MinMax: Ours (Sin TimeXer)', 'AB', ['LGB','CB','MO']);
 drawLR('lr-sota', 'LogReturn_MinMax: Yu et al. 2025', 'SM', ['LGB','CB','XG','BL']);
-drawLR('lr-parker', 'LogReturn_MinMax: Parker et al. 2025', 'XGB_META_EXT', ['LGB','CB']);
+drawLR('lr-parker', 'LogReturn_MinMax: Parker et al. 2025', 'XGB_META_EXT', ['LGB','CB','LSTM_EXT','GRU_EXT','ARIMA_EXT','RF_EXT','TRANS_EXT']);
 
 ['MSE','RMSE','MAE','R2'].forEach((mn,i)=>{const ids=['chart-mse','chart-rmse','chart-mae','chart-r2'];const titles=['MSE','RMSE','MAE','R2'];
 Plotly.newPlot(ids[i],[{x:metricsData.map(m=>m.Modelo),y:metricsData.map(m=>m[mn]),type:'bar',marker:{color:metricsData.map(m=>m.Color),opacity:.85},text:metricsData.map(m=>m[mn].toFixed(4)),textposition:'outside',textfont:{color:'#333',size:11}}],{...dL,title:{text:titles[i],font:{size:14,color:'#333'}},xaxis:{...dL.xaxis,tickangle:45},showlegend:false,margin:{t:50,r:20,b:150,l:60}},{responsive:true,displayModeBar:false});});
@@ -623,6 +658,87 @@ Plotly.newPlot(ids[i],[{x:metricsData.map(m=>m.Modelo),y:metricsData.map(m=>m[mn
     print(f'Listo Comparativa Limpia: {out_html}')
 
 generate_compare_report(TOKEN, cp, gi_v, pr_r, preds_p, mp, MDL, zs, ze, os.path.dirname(__file__), ye_vals=yv, meta_raw_preds=meta_raw_preds, base_raw_preds=base_raw_preds)
+
+# ===== INYECTAR DA Y CORREGIR TABLA DE META LEARNERS CON BEAUTIFULSOUP =====
+html_path_meta = os.path.join(os.path.dirname(__file__), 'report_compare.html')
+if os.path.exists(html_path_meta):
+    with open(html_path_meta, 'r', encoding='utf-8') as f:
+        soup_meta = BeautifulSoup(f.read(), 'html.parser')
+
+    # Buscar la tabla "Metricas Generales de los Meta Learners"
+    meta_table = None
+    for h2 in soup_meta.find_all('h2'):
+        if 'Metricas Generales' in h2.text:
+            meta_table = h2.find_next('table', class_='metrics-table')
+            break
+
+    if meta_table:
+        # 1) Agregar columna DA al header
+        thead_tr = meta_table.find('thead').find('tr')
+        th_da = soup_meta.new_tag('th')
+        th_da.string = 'DA (%)'
+        thead_tr.append(th_da)
+
+        # 2) Construir datos de los 4 meta modelos con DA
+        meta_order = ['MT', 'AB', 'SM', 'XGB_META_EXT']  # Orden deseado de filas
+        meta_rows_data = []
+        for km in meta_order:
+            if km not in preds_p:
+                continue
+            v = preds_p[km]
+            m_valid = ~np.isnan(v)
+            if not m_valid.any():
+                continue
+            v_valid = v[m_valid]
+            y_valid = pr_r[m_valid]
+            if len(v_valid) < 2:
+                continue
+            metrics = met(y_valid, v_valid)
+            da_val = directional_accuracy(y_valid, v_valid)
+            meta_rows_data.append({
+                'key': km,
+                'name': MDL[km][1],
+                'color': MDL[km][0],
+                'MSE': metrics['MSE'],
+                'RMSE': metrics['RMSE'],
+                'MAE': metrics['MAE'],
+                'R2': metrics['R2'],
+                'DA': round(da_val, 2)
+            })
+
+        # 3) Encontrar mejor DA (máximo) y mejor MSE (mínimo)
+        best_da = max(meta_rows_data, key=lambda r: r['DA'])['DA'] if meta_rows_data else None
+        best_mse = min(meta_rows_data, key=lambda r: r['MSE'])['MSE'] if meta_rows_data else None
+
+        # 4) Reconstruir tbody con filas en orden correcto
+        tbody = meta_table.find('tbody')
+        tbody.clear()
+        for row_data in meta_rows_data:
+            tr = soup_meta.new_tag('tr')
+            # Columna Modelo (badge)
+            td_model = soup_meta.new_tag('td')
+            badge = soup_meta.new_tag('span', attrs={'class': 'model-badge', 'style': f'background:{row_data["color"]}'})
+            badge.string = row_data['name']
+            td_model.append(badge)
+            tr.append(td_model)
+            # Columnas MSE, RMSE, MAE, R2
+            for mn in ['MSE', 'RMSE', 'MAE', 'R2']:
+                td = soup_meta.new_tag('td')
+                td.string = f'{row_data[mn]:.6f}'
+                if mn == 'MSE' and best_mse is not None and row_data[mn] == best_mse:
+                    td['style'] = 'background:#d4edda'
+                tr.append(td)
+            # Columna DA (%)
+            td_da = soup_meta.new_tag('td')
+            td_da.string = f'{row_data["DA"]:.2f}%'
+            if best_da is not None and row_data['DA'] == best_da:
+                td_da['style'] = 'background:#d4edda'
+            tr.append(td_da)
+            tbody.append(tr)
+
+    with open(html_path_meta, 'w', encoding='utf-8') as f:
+        f.write(str(soup_meta))
+    print(f'[META TABLE] Tabla de Meta Learners actualizada con DA y Ensamble Actual en {html_path_meta}')
 
 # ===== PRUEBA DE DIEBOLD-MARIANO (ESCALA USD) =====
 def check_dm_assumptions(d: np.ndarray, name: str) -> None:
