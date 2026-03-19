@@ -540,9 +540,10 @@ def generate_compare_report(token, cp, gi_v, pr_r, preds_p, mp, MDL, zs, ze, out
     </div>
   </div>
   <div class="card"><h2>Comparacion Visual de Metricas</h2>
-    <div class="metrics-grid">
+    <div class="metrics-grid" style="grid-template-columns:1fr 1fr;grid-template-rows:auto auto auto;">
       <div id="chart-mse"></div><div id="chart-rmse"></div>
       <div id="chart-mae"></div><div id="chart-r2"></div>
+      <div id="chart-da" style="grid-column:1/3;max-width:50%;margin:0 auto;"></div>
     </div>
   </div>
   <footer>Generado automaticamente por main_compare.py</footer>
@@ -650,8 +651,37 @@ drawLR('lr-ablation', 'LogReturn_MinMax: Ours (Sin TimeXer)', 'AB', ['LGB','CB',
 drawLR('lr-sota', 'LogReturn_MinMax: Yu et al. 2025', 'SM', ['LGB','CB','XG','BL']);
 drawLR('lr-parker', 'LogReturn_MinMax: Parker et al. 2025', 'XGB_META_EXT', ['LGB','CB','LSTM_EXT','GRU_EXT','ARIMA_EXT','RF_EXT','TRANS_EXT']);
 
-['MSE','RMSE','MAE','R2'].forEach((mn,i)=>{const ids=['chart-mse','chart-rmse','chart-mae','chart-r2'];const titles=['MSE','RMSE','MAE','R2'];
-Plotly.newPlot(ids[i],[{x:metricsData.map(m=>m.Modelo),y:metricsData.map(m=>m[mn]),type:'bar',marker:{color:metricsData.map(m=>m.Color),opacity:.85},text:metricsData.map(m=>m[mn].toFixed(4)),textposition:'outside',textfont:{color:'#333',size:11}}],{...dL,title:{text:titles[i],font:{size:14,color:'#333'}},xaxis:{...dL.xaxis,tickangle:45},showlegend:false,margin:{t:50,r:20,b:150,l:60}},{responsive:true,displayModeBar:false});});
+// --- Gráficas de Métricas con DA y resaltado ---
+// Orden fijo de modelos para las barras
+const metaOrder = ['Meta LSTM (Ensamble Actual)', 'Ours (Ensamble Actual Sin TimeXer)', 'Yu et al. [44] 2025', 'Parker et al. 2025'];
+const orderedMetrics = metaOrder.map(name => metricsData.find(m => m.Modelo === name)).filter(m => m);
+
+function drawMetricBar(divId, mn, titleTxt, bestFn, fmtFn) {
+    const vals = orderedMetrics.map(m => m[mn]);
+    const bestVal = bestFn(vals);
+    const borderColors = vals.map(v => v === bestVal ? '#000' : 'rgba(0,0,0,0)');
+    const borderWidths = vals.map(v => v === bestVal ? 2.5 : 0);
+    Plotly.newPlot(divId, [{
+        x: orderedMetrics.map(m => m.Modelo),
+        y: vals,
+        type: 'bar',
+        marker: {color: orderedMetrics.map(m => m.Color), opacity: 0.85, line: {color: borderColors, width: borderWidths}},
+        text: vals.map(v => fmtFn(v)),
+        textposition: 'outside',
+        textfont: {color: '#333', size: 11}
+    }], {...dL, title: {text: titleTxt, font: {size: 14, color: '#333'}}, xaxis: {...dL.xaxis, tickangle: 15}, showlegend: false, margin: {t: 50, r: 20, b: 150, l: 60}}, {responsive: true, displayModeBar: false});
+}
+
+const minFn = arr => Math.min(...arr);
+const maxFn = arr => Math.max(...arr);
+const fmt4 = v => v.toFixed(4);
+const fmtDA = v => v.toFixed(2) + '%';
+
+drawMetricBar('chart-mse', 'MSE', 'MSE', minFn, fmt4);
+drawMetricBar('chart-rmse', 'RMSE', 'RMSE', minFn, fmt4);
+drawMetricBar('chart-mae', 'MAE', 'MAE', minFn, fmt4);
+drawMetricBar('chart-r2', 'R2', 'R2', maxFn, fmt4);
+drawMetricBar('chart-da', 'DA', 'DA (%)', maxFn, fmtDA);
 </script></body></html>"""
     out_html = os.path.join(out_dir, 'report_compare.html')
     with open(out_html, 'w', encoding='utf-8') as fh: fh.write(html)
@@ -659,7 +689,7 @@ Plotly.newPlot(ids[i],[{x:metricsData.map(m=>m.Modelo),y:metricsData.map(m=>m[mn
 
 generate_compare_report(TOKEN, cp, gi_v, pr_r, preds_p, mp, MDL, zs, ze, os.path.dirname(__file__), ye_vals=yv, meta_raw_preds=meta_raw_preds, base_raw_preds=base_raw_preds)
 
-# ===== INYECTAR DA Y CORREGIR TABLA DE META LEARNERS CON BEAUTIFULSOUP =====
+# ===== INYECTAR DA Y CORREGIR TABLA DE META LEARNERS + METRICAS BAR CHARTS =====
 html_path_meta = os.path.join(os.path.dirname(__file__), 'report_compare.html')
 if os.path.exists(html_path_meta):
     with open(html_path_meta, 'r', encoding='utf-8') as f:
@@ -673,18 +703,20 @@ if os.path.exists(html_path_meta):
             break
 
     if meta_table:
-        # 1) Agregar columna DA al header
+        # 1) Reconstruir header con DA
         thead_tr = meta_table.find('thead').find('tr')
-        th_da = soup_meta.new_tag('th')
-        th_da.string = 'DA (%)'
-        thead_tr.append(th_da)
+        thead_tr.clear()
+        for col_name in ['Modelo', 'MSE', 'RMSE', 'MAE', 'R2', 'DA (%)']:
+            th = soup_meta.new_tag('th')
+            th.string = col_name
+            thead_tr.append(th)
 
         # 2) Construir datos de los 4 meta modelos con DA
         meta_order = ['MT', 'AB', 'SM', 'XGB_META_EXT']  # Orden deseado de filas
         meta_rows_data = []
         for km in meta_order:
             if km not in preds_p:
-                continue
+                raise KeyError(f'Modelo "{MDL[km][1]}" (key={km}) no encontrado en preds_p')
             v = preds_p[km]
             m_valid = ~np.isnan(v)
             if not m_valid.any():
@@ -706,11 +738,16 @@ if os.path.exists(html_path_meta):
                 'DA': round(da_val, 2)
             })
 
-        # 3) Encontrar mejor DA (máximo) y mejor MSE (mínimo)
-        best_da = max(meta_rows_data, key=lambda r: r['DA'])['DA'] if meta_rows_data else None
-        best_mse = min(meta_rows_data, key=lambda r: r['MSE'])['MSE'] if meta_rows_data else None
+        # 3) Encontrar mejores valores para cada métrica
+        best_vals = {}
+        if meta_rows_data:
+            best_vals['MSE'] = min(r['MSE'] for r in meta_rows_data)
+            best_vals['RMSE'] = min(r['RMSE'] for r in meta_rows_data)
+            best_vals['MAE'] = min(r['MAE'] for r in meta_rows_data)
+            best_vals['R2'] = max(r['R2'] for r in meta_rows_data)
+            best_vals['DA'] = max(r['DA'] for r in meta_rows_data)
 
-        # 4) Reconstruir tbody con filas en orden correcto
+        # 4) Reconstruir tbody con filas en orden correcto y resaltado verde
         tbody = meta_table.find('tbody')
         tbody.clear()
         for row_data in meta_rows_data:
@@ -725,20 +762,47 @@ if os.path.exists(html_path_meta):
             for mn in ['MSE', 'RMSE', 'MAE', 'R2']:
                 td = soup_meta.new_tag('td')
                 td.string = f'{row_data[mn]:.6f}'
-                if mn == 'MSE' and best_mse is not None and row_data[mn] == best_mse:
+                if mn in best_vals and row_data[mn] == best_vals[mn]:
                     td['style'] = 'background:#d4edda'
                 tr.append(td)
             # Columna DA (%)
             td_da = soup_meta.new_tag('td')
             td_da.string = f'{row_data["DA"]:.2f}%'
-            if best_da is not None and row_data['DA'] == best_da:
+            if 'DA' in best_vals and row_data['DA'] == best_vals['DA']:
                 td_da['style'] = 'background:#d4edda'
             tr.append(td_da)
             tbody.append(tr)
 
+    # 5) Actualizar metricsData en el script para incluir DA y orden correcto
+    script_tag = soup_meta.find('script', string=lambda s: s and 'metricsData' in s)
+    if script_tag and meta_rows_data:
+        js_content = script_tag.string
+        # Construir metricsData ordenada con DA
+        ordered_metrics_js = []
+        for rd in meta_rows_data:
+            ordered_metrics_js.append({
+                'Modelo': rd['name'],
+                'Color': rd['color'],
+                'MSE': rd['MSE'],
+                'RMSE': rd['RMSE'],
+                'MAE': rd['MAE'],
+                'R2': rd['R2'],
+                'DA': rd['DA']
+            })
+        new_metrics_json = json.dumps(ordered_metrics_js)
+        # Reemplazar la línea const metricsData=... en el JS
+        import re
+        js_content = re.sub(
+            r'const metricsData=.*?;',
+            f'const metricsData={new_metrics_json};',
+            js_content,
+            count=1
+        )
+        script_tag.string = js_content
+
     with open(html_path_meta, 'w', encoding='utf-8') as f:
         f.write(str(soup_meta))
-    print(f'[META TABLE] Tabla de Meta Learners actualizada con DA y Ensamble Actual en {html_path_meta}')
+    print(f'[META TABLE + CHARTS] Tabla y gráficas de métricas actualizadas en {html_path_meta}')
 
 # ===== PRUEBA DE DIEBOLD-MARIANO (ESCALA USD) =====
 def check_dm_assumptions(d: np.ndarray, name: str) -> None:
@@ -766,15 +830,28 @@ def dm_test(d: np.ndarray) -> tuple[float, float]:
     return dm_stat, p_value
 
 logging.info("[DM] Iniciando pruebas Diebold-Mariano sobre los 4 meta modelos...")
+
+# Validar que MT existe en preds_p
+if 'MT' not in preds_p:
+    raise KeyError('Modelo "Meta LSTM (Ensamble Actual)" (key=MT) no encontrado en preds_p')
+
+# Orden explícito de pares para la tabla DM (6 combinaciones C(4,2))
+dm_pairs_order = [
+    ('MT', 'AB'),
+    ('MT', 'SM'),
+    ('MT', 'XGB_META_EXT'),
+    ('AB', 'SM'),
+    ('AB', 'XGB_META_EXT'),
+    ('SM', 'XGB_META_EXT'),
+]
+
 dm_results = []
-# Solo comparar los 4 meta-modelos solicitados
-target_metas = ['MT', 'AB', 'SM', 'XGB_META_EXT']
-for (ki, kj) in combinations(target_metas, 2):
+for (ki, kj) in dm_pairs_order:
     if ki in preds_p and kj in preds_p:
         pi, pj = preds_p[ki], preds_p[kj]
         # Alinear por índices no nulos comunes
         mask = (~np.isnan(pi)) & (~np.isnan(pj)) & (~np.isnan(pr_r))
-        if mask.sum() > 30: # Mínimo de muestras para validez estadística
+        if mask.sum() > 30:  # Mínimo de muestras para validez estadística
             d = (pr_r[mask] - pi[mask])**2 - (pr_r[mask] - pj[mask])**2
             check_dm_assumptions(d, f"{ki} vs {kj}")
             stat, pval = dm_test(d)
@@ -783,28 +860,37 @@ for (ki, kj) in combinations(target_metas, 2):
                 'stat': stat, 'p_value': pval, 'sig': pval < 0.05
             })
 
-# Inyectar tabla DM en el HTML existente
+# Inyectar/reemplazar tabla DM en el HTML existente
 html_path = os.path.join(os.path.dirname(__file__), 'report_compare.html')
 if os.path.exists(html_path):
     with open(html_path, 'r', encoding='utf-8') as f:
         soup = BeautifulSoup(f.read(), 'html.parser')
-    
+
+    # Eliminar tabla DM existente si ya fue inyectada previamente
+    for h2 in soup.find_all('h2'):
+        if 'Diebold-Mariano' in h2.text:
+            dm_card = h2.find_parent('div', class_='card')
+            if dm_card:
+                dm_card.decompose()
+            break
+
     container = soup.find('div', class_='container')
     if container:
-        dm_html = f"""
+        dm_html = """
         <div class="card">
             <h2>Prueba de Diebold-Mariano (Escala USD: Errores Cuadráticos)</h2>
-            <p style="color:#666; font-size:0.9rem; margin-bottom:12px;">H0: Los modelos tienen la misma precisión predictiva. p-valor < 0.05 indica diferencia significativa.</p>
+            <p style="color:#666; font-size:0.9rem; margin-bottom:12px;">H0: Los modelos tienen la misma precisión predictiva. p-valor &lt; 0.05 indica diferencia significativa.</p>
             <table class="metrics-table">
                 <thead><tr><th>Modelo A</th><th>Modelo B</th><th>Estadístico DM</th><th>p-valor</th><th>Significativo</th></tr></thead>
                 <tbody>"""
         for r in dm_results:
-            st = f'<strong style="color:red">{r["stat"]:.4f}</strong>' if r['sig'] else f'{r["stat"]:.4f}'
-            pv = f'<strong style="color:red">{r["p_value"]:.4f}</strong>' if r['sig'] else f'{r["p_value"]:.4f}'
-            dm_html += f'<tr><td>{r["model_a"]}</td><td>{r["model_b"]}</td><td>{st}</td><td>{pv}</td><td>{"SÍ" if r["sig"] else "No"}</td></tr>'
+            st = f'<strong style="color:black">{r["stat"]:.4f}</strong>' if r['sig'] else f'{r["stat"]:.4f}'
+            pv = f'<strong style="color:black">{r["p_value"]:.4f}</strong>' if r['sig'] else f'{r["p_value"]:.4f}'
+            sig_text = '<strong style="color:black">SÍ</strong>' if r['sig'] else 'No'
+            dm_html += f'<tr><td>{r["model_a"]}</td><td>{r["model_b"]}</td><td>{st}</td><td>{pv}</td><td>{sig_text}</td></tr>'
         dm_html += "</tbody></table></div>"
         container.append(BeautifulSoup(dm_html, 'html.parser'))
-    
+
     with open(html_path, 'w', encoding='utf-8') as f:
         f.write(str(soup))
-    print(f"[DM] Resultados inyectados exitosamente en {html_path}")
+    print(f"[DM] 6 pares DM inyectados exitosamente en {html_path}")
