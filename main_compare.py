@@ -375,7 +375,15 @@ else:
 ze = len(cp)
 
 # Predicciones raw de meta-learners para métricas sobre LogReturn_MinMax
-meta_raw_preds = {'MT': pmt_actual, 'AB': pmt_ablation, 'SM': pmt_sota}
+p_usd_parker = preds_p['XGB_META_EXT']
+pmt_parker = np.full(len(ye), np.nan)
+v_mask = ~np.isnan(p_usd_parker)
+if v_mask.any():
+    # log(p_usd / prev)
+    p_log = np.log(p_usd_parker[v_mask] / prev[v_mask])
+    pmt_parker[v_mask] = sct.transform(p_log.reshape(-1, 1)).flatten()
+
+meta_raw_preds = {'MT': pmt_actual, 'AB': pmt_ablation, 'SM': pmt_sota, 'XGB_META_EXT': pmt_parker}
 # Predicciones raw de modelos base para gráficos LogReturn_MinMax
 base_raw_preds = {'LGB': pl, 'CB': pc, 'TX': pt, 'MO': pm, 'XG': px, 'BL': pb}
 
@@ -426,7 +434,7 @@ def generate_compare_report(token, cp, gi_v, pr_r, preds_p, mp, MDL, zs, ze, out
   .model-badge{{display:inline-block;padding:4px 12px;border-radius:20px;font-weight:600;font-size:.85rem;color:#fff}}
   .best-badge{{display:inline-block;margin-left:8px;padding:2px 8px;border-radius:10px;background:#eee;color:#000;font-size:.7rem;font-weight:600;border:1px solid #ccc}}
   .metrics-grid{{display:grid;grid-template-columns:1fr 1fr;gap:20px}}
-  .charts-grid{{display:grid;grid-template-columns:1fr 1fr 1fr;gap:20px}}
+  .charts-grid{{display:grid;grid-template-columns:repeat(auto-fit, minmax(300px, 1fr));gap:20px}}
   @media(max-width:1024px){{.charts-grid{{grid-template-columns:1fr}}}}
   @media(max-width:768px){{.metrics-grid{{grid-template-columns:1fr}}}}
   footer{{text-align:center;color:#999;font-size:.8rem;margin-top:40px;padding:20px}}
@@ -449,6 +457,10 @@ def generate_compare_report(token, cp, gi_v, pr_r, preds_p, mp, MDL, zs, ze, out
     <div class="card">
       <h2>Yu et al. [44] 2025</h2>
       <div id="zoom-chart-sota"></div>
+    </div>
+    <div class="card">
+      <h2>Parker et al. 2025</h2>
+      <div id="zoom-chart-parker"></div>
     </div>
   </div>
 
@@ -475,6 +487,7 @@ def generate_compare_report(token, cp, gi_v, pr_r, preds_p, mp, MDL, zs, ze, out
       <div id="lr-actual"></div>
       <div id="lr-ablation"></div>
       <div id="lr-sota"></div>
+      <div id="lr-parker"></div>
     </div>
   </div>
   <div class="card"><h2>Comparacion Visual de Metricas</h2>
@@ -492,7 +505,7 @@ def generate_compare_report(token, cp, gi_v, pr_r, preds_p, mp, MDL, zs, ze, out
     if ye_vals is not None and meta_raw_preds is not None:
         lr_real = [float(v) for v in ye_vals]
         lr_idx = list(range(len(ye_vals)))
-        for km in ['MT', 'AB', 'SM']:
+        for km in ['MT', 'AB', 'SM', 'XGB_META_EXT']:
             p_raw = meta_raw_preds.get(km)
             if p_raw is not None:
                 m_valid = ~np.isnan(p_raw)
@@ -547,7 +560,8 @@ function drawChart(divId, titleTxt, keys, metaKey) {
 
 drawChart('zoom-chart-actual', 'Precio Close vs Actual', ['LGB','CB','TX','MO','MT', 'LSTM_EXT', 'GRU_EXT'], 'MT');
 drawChart('zoom-chart-ablation', 'Precio Close vs Ours', ['LGB','CB','MO','AB', 'ARIMA_EXT', 'RF_EXT'], 'AB');
-drawChart('zoom-chart-sota', 'Precio Close vs Yu et al. 2025', ['LGB','CB','XG','BL','SM', 'TRANS_EXT', 'XGB_META_EXT'], 'SM');
+drawChart('zoom-chart-sota', 'Precio Close vs Yu et al. 2025', ['LGB','CB','XG','BL','SM', 'TRANS_EXT'], 'SM');
+drawChart('zoom-chart-parker', 'Precio Close vs Parker et al. 2025', ['LGB','CB','XGB_META_EXT'], 'XGB_META_EXT');
 
 function drawLR(divId, titleTxt, metaKey, baseKeys) {
     if(!lrData['_real']) return;
@@ -572,6 +586,7 @@ function drawLR(divId, titleTxt, metaKey, baseKeys) {
 drawLR('lr-actual', 'LogReturn_MinMax: Ensamble Actual', 'MT', ['LGB','CB','TX','MO']);
 drawLR('lr-ablation', 'LogReturn_MinMax: Ours (Sin TimeXer)', 'AB', ['LGB','CB','MO']);
 drawLR('lr-sota', 'LogReturn_MinMax: Yu et al. 2025', 'SM', ['LGB','CB','XG','BL']);
+drawLR('lr-parker', 'LogReturn_MinMax: Parker et al. 2025', 'XGB_META_EXT', ['LGB','CB']);
 
 ['MSE','RMSE','MAE','R2'].forEach((mn,i)=>{const ids=['chart-mse','chart-rmse','chart-mae','chart-r2'];const titles=['MSE','RMSE','MAE','R2'];
 Plotly.newPlot(ids[i],[{x:metricsData.map(m=>m.Modelo),y:metricsData.map(m=>m[mn]),type:'bar',marker:{color:metricsData.map(m=>m.Color),opacity:.85},text:metricsData.map(m=>m[mn].toFixed(4)),textposition:'outside',textfont:{color:'#333',size:11}}],{...dL,title:{text:titles[i],font:{size:14,color:'#333'}},xaxis:{...dL.xaxis,tickangle:45},showlegend:false,margin:{t:50,r:20,b:150,l:60}},{responsive:true,displayModeBar:false});});
