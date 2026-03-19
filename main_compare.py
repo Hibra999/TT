@@ -1,4 +1,4 @@
-import pandas as pd; import numpy as np; import optuna; import warnings; import os
+import pandas as pd; import numpy as np; import optuna; import warnings; import os; import logging; from itertools import combinations
 from data.yfinance_data import download_yf; from data.ccxt_data import download_cx; from features.macroeconomics import macroeconomicos
 
 # Modelos actuales
@@ -8,6 +8,9 @@ from model.bases_models.timexer_model import objective_timexer_global, train_fin
 from model.bases_models.moraiMOE_model import objective_moirai_moe_global, preload_moirai_module, train_final_and_predict_test as moirai_predict_test
 from model.meta_model.lstm_model import optimize_lstm_meta, get_average_weights
 from preprocessing.oof_generators import build_oof_dataframe, collect_oof_predictions
+from statsmodels.tsa.stattools import adfuller; from statsmodels.stats.diagnostic import acorr_ljungbox
+from statsmodels.regression.linear_model import OLS; from statsmodels.stats.sandwich_covariance import cov_hac
+from scipy.stats import t as t_dist; from bs4 import BeautifulSoup
 
 # Modelos SOTA
 from model.sota.stacking_ensemble import (
@@ -83,7 +86,7 @@ MDL = {
 
 # ===== CONFIG =====
 TOKEN = '^GSPC'
-N_LGB, N_CB = 10, 10
+N_LGB, N_CB = 10,       
 N_TX, N_MO = 10, 10
 N_XG, N_BL = 10, 10
 N_MT, N_AB, N_SM = 10, 10, 10
@@ -596,3 +599,72 @@ Plotly.newPlot(ids[i],[{x:metricsData.map(m=>m.Modelo),y:metricsData.map(m=>m[mn
     print(f'Listo Comparativa Limpia: {out_html}')
 
 generate_compare_report(TOKEN, cp, gi_v, pr_r, preds_p, mp, MDL, zs, ze, os.path.dirname(__file__), ye_vals=yv, meta_raw_preds=meta_raw_preds, base_raw_preds=base_raw_preds)
+
+# ===== PRUEBA DE DIEBOLD-MARIANO (ESCALA USD) =====
+def check_dm_assumptions(d: np.ndarray, name: str) -> None:
+    """Verifica estacionariedad y autocorrelación del diferencial de pérdida."""
+    # 1. ADF (Estacionariedad)
+    adf_res = adfuller(d, autolag='AIC')
+    if adf_res[1] > 0.05:
+        logging.warning(f"[DM:{name}] d_t no estacionaria (ADF p={adf_res[1]:.3f})")
+    # 2. Ljung-Box (Autocorrelación)
+    h = int(np.floor(len(d)**(1/3)))
+    lb_res = acorr_ljungbox(d, lags=[h], return_df=True)
+    if lb_res['lb_pvalue'].iloc[0] < 0.05:
+        logging.info(f"[DM:{name}] Autocorrelación detectada (Ljung-Box p={lb_res['lb_pvalue'].iloc[0]:.3f}). Uso de HAC confirmado.")
+
+def dm_test(d: np.ndarray) -> tuple[float, float]:
+    """Prueba DM con corrección HAC (Heteroskedasticity and Autocorrelation Consistent)."""
+    T = len(d)
+    h = int(np.floor(T ** (1/3)))
+    d_bar = d.mean()
+    # OLS sobre constante para obtener varianza HAC
+    model = OLS(d, np.ones(T)).fit()
+    hac_var = cov_hac(model, nlags=h).item()
+    dm_stat = d_bar / np.sqrt(hac_var / T)
+    p_value = 2 * (1 - t_dist.cdf(abs(dm_stat), df=T-1))
+    return dm_stat, p_value
+
+logging.info("[DM] Iniciando pruebas Diebold-Mariano sobre los 4 meta modelos...")
+dm_results = []
+# Solo comparar los 4 meta-modelos solicitados
+target_metas = ['MT', 'AB', 'SM', 'XGB_META_EXT']
+for (ki, kj) in combinations(target_metas, 2):
+    if ki in preds_p and kj in preds_p:
+        pi, pj = preds_p[ki], preds_p[kj]
+        # Alinear por índices no nulos comunes
+        mask = (~np.isnan(pi)) & (~np.isnan(pj)) & (~np.isnan(pr_r))
+        if mask.sum() > 30: # Mínimo de muestras para validez estadística
+            d = (pr_r[mask] - pi[mask])**2 - (pr_r[mask] - pj[mask])**2
+            check_dm_assumptions(d, f"{ki} vs {kj}")
+            stat, pval = dm_test(d)
+            dm_results.append({
+                'model_a': MDL[ki][1], 'model_b': MDL[kj][1],
+                'stat': stat, 'p_value': pval, 'sig': pval < 0.05
+            })
+
+# Inyectar tabla DM en el HTML existente
+html_path = os.path.join(os.path.dirname(__file__), 'report_compare.html')
+if os.path.exists(html_path):
+    with open(html_path, 'r', encoding='utf-8') as f:
+        soup = BeautifulSoup(f.read(), 'html.parser')
+    
+    container = soup.find('div', class_='container')
+    if container:
+        dm_html = f"""
+        <div class="card">
+            <h2>Prueba de Diebold-Mariano (Escala USD: Errores Cuadráticos)</h2>
+            <p style="color:#666; font-size:0.9rem; margin-bottom:12px;">H0: Los modelos tienen la misma precisión predictiva. p-valor < 0.05 indica diferencia significativa.</p>
+            <table class="metrics-table">
+                <thead><tr><th>Modelo A</th><th>Modelo B</th><th>Estadístico DM</th><th>p-valor</th><th>Significativo</th></tr></thead>
+                <tbody>"""
+        for r in dm_results:
+            st = f'<strong style="color:red">{r["stat"]:.4f}</strong>' if r['sig'] else f'{r["stat"]:.4f}'
+            pv = f'<strong style="color:red">{r["p_value"]:.4f}</strong>' if r['sig'] else f'{r["p_value"]:.4f}'
+            dm_html += f'<tr><td>{r["model_a"]}</td><td>{r["model_b"]}</td><td>{st}</td><td>{pv}</td><td>{"SÍ" if r["sig"] else "No"}</td></tr>'
+        dm_html += "</tbody></table></div>"
+        container.append(BeautifulSoup(dm_html, 'html.parser'))
+    
+    with open(html_path, 'w', encoding='utf-8') as f:
+        f.write(str(soup))
+    print(f"[DM] Resultados inyectados exitosamente en {html_path}")
