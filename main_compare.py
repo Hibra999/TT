@@ -83,7 +83,7 @@ MDL = {
     'MO':  ('#ff7f0e', 'Moirai-MoE (Base Actual)'),
     'XG':  ('#8c564b', 'XGBoost (Base SOTA)'),
     'BL':  ('#e377c2', 'Base LSTM (Base SOTA)'),
-    'MT':  ('#17becf', 'Meta LSTM (Ensamble Actual)'),
+    'MT':  ('#17becf', 'Ensamble Actual'),
     'AB':  ('#e377c2', 'Ours (Ensamble Actual Sin TimeXer)'),
     'SM':  ('#d62728', 'Yu et al. [44] 2025'),
     'LSTM_EXT': ('#ff1493', 'LSTM (Externo)'),
@@ -392,9 +392,12 @@ preds_p = {
     'TRANS_EXT': ext_preds_map.get('TRANSFORMER_EXT', np.full(len(df), np.nan))[test_orig_indices],
     'XGB_META_EXT': ext_preds_map.get('XGBOOST_EXT', np.full(len(df), np.nan))[test_orig_indices]
 }
+preds_p['Ensamble Actual'] = preds_p['MT']  # Alias para acceso por nombre
 
 mp = []
 for km, v in preds_p.items():
+    if km not in MDL:  # Saltar alias (e.g. 'Ensamble Actual')
+        continue
     if (~np.isnan(v)).any():
         v_valid = v[~np.isnan(v)]
         y_valid = pr_r[~np.isnan(v)]
@@ -422,6 +425,11 @@ if v_mask.any():
     pmt_parker[v_mask] = sct.transform(p_log.reshape(-1, 1)).flatten()
 
 meta_raw_preds = {'MT': pmt_actual, 'AB': pmt_ablation, 'SM': pmt_sota, 'XGB_META_EXT': pmt_parker}
+meta_raw_preds['Ensamble Actual'] = meta_raw_preds['MT']  # Alias para acceso por nombre
+
+# Verificar existencia de meta_raw_preds['Ensamble Actual']
+if 'Ensamble Actual' not in meta_raw_preds:
+    raise KeyError('meta_raw_preds["Ensamble Actual"] no encontrado. El meta modelo actual no fue entrenado correctamente.')
 # Predicciones raw de modelos base para gráficos LogReturn_MinMax
 base_raw_preds = {'LGB': pl, 'CB': pc, 'TX': pt, 'MO': pm, 'XG': px, 'BL': pb}
 
@@ -560,10 +568,12 @@ def generate_compare_report(token, cp, gi_v, pr_r, preds_p, mp, MDL, zs, ze, out
             if p_raw is not None:
                 m_valid = ~np.isnan(p_raw)
                 if m_valid.any():
+                    # Para MT usar nombre "Ensamble Actual (Meta)" en leyenda LR
+                    lr_name = 'Ensamble Actual (Meta)' if km == 'MT' else MDL[km][1]
                     lr_data[km] = {
                         'idx': [int(i) for i in np.where(m_valid)[0]],
                         'y': [float(p) for p in p_raw[m_valid]],
-                        'name': MDL[km][1],
+                        'name': lr_name,
                         'color': MDL[km][0]
                     }
         # Agregar predicciones base (raw LogReturn_MinMax) para cada modelo
@@ -649,11 +659,11 @@ function drawLR(divId, titleTxt, metaKey, baseKeys) {
 drawLR('lr-actual', 'LogReturn_MinMax: Ensamble Actual', 'MT', ['LGB','CB','TX','MO']);
 drawLR('lr-ablation', 'LogReturn_MinMax: Ours (Sin TimeXer)', 'AB', ['LGB','CB','MO']);
 drawLR('lr-sota', 'LogReturn_MinMax: Yu et al. 2025', 'SM', ['LGB','CB','XG','BL']);
-drawLR('lr-parker', 'LogReturn_MinMax: Parker et al. 2025', 'XGB_META_EXT', ['LGB','CB','LSTM_EXT','GRU_EXT','ARIMA_EXT','RF_EXT','TRANS_EXT']);
+drawLR('lr-parker', 'LogReturn_MinMax: Parker et al. 2025', 'XGB_META_EXT', ['LSTM_EXT','GRU_EXT','ARIMA_EXT','RF_EXT','TRANS_EXT']);
 
 // --- Gráficas de Métricas con DA y resaltado ---
 // Orden fijo de modelos para las barras
-const metaOrder = ['Meta LSTM (Ensamble Actual)', 'Ours (Ensamble Actual Sin TimeXer)', 'Yu et al. [44] 2025', 'Parker et al. 2025'];
+const metaOrder = ['Ensamble Actual', 'Ours (Ensamble Actual Sin TimeXer)', 'Yu et al. [44] 2025', 'Parker et al. 2025'];
 const orderedMetrics = metaOrder.map(name => metricsData.find(m => m.Modelo === name)).filter(m => m);
 
 function drawMetricBar(divId, mn, titleTxt, bestFn, fmtFn) {
