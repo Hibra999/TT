@@ -33,6 +33,9 @@ def build_oof_dataframe(oof_lgb, oof_cb, oof_tx, oof_moirai, y):
     preds_cb, idx_cb, _ = collect_oof_predictions(oof_cb)
     preds_tx, idx_tx, _ = collect_oof_predictions(oof_tx)
     preds_moirai, idx_moirai, _ = collect_oof_predictions(oof_moirai)
+    
+    print(f"[DEBUG OOF] Base sizes: LGB={len(idx_lgb)}, CB={len(idx_cb)}, TX={len(idx_tx)}, MO={len(idx_moirai)}")
+    
     # Crear DataFrames individuales
     df_lgb = pd.DataFrame({'idx': idx_lgb, 'lgb': preds_lgb})
     df_cb = pd.DataFrame({'idx': idx_cb, 'catboost': preds_cb})
@@ -42,11 +45,18 @@ def build_oof_dataframe(oof_lgb, oof_cb, oof_tx, oof_moirai, y):
     y_array = y.values if isinstance(y, pd.Series) else np.array(y)
     # Merge por indice (inner join = solo donde todos tienen prediccion)
     merged = df_lgb.merge(df_cb, on='idx', how='inner')
+    print(f"[DEBUG OOF] After CB merge: {len(merged)}")
     merged = merged.merge(df_tx, on='idx', how='inner')
+    print(f"[DEBUG OOF] After TX merge: {len(merged)}")
     merged = merged.merge(df_moirai, on='idx', how='inner')
+    print(f"[DEBUG OOF] After MO merge: {len(merged)}")
     # Agregar target
     merged['target'] = merged['idx'].apply(lambda i: y_array[int(i)] if int(i) < len(y_array) else np.nan)
     # Eliminar filas con NaN
     merged = merged.dropna()
+    print(f"[DEBUG OOF] Final merged: {len(merged)}")
+    if len(merged) > 0:
+        print(f"[DEBUG OOF] Missing TX indices in merged? Total unique TX: {len(np.unique(idx_tx))} vs merged {len(merged)}")
+        
     merged = merged.sort_values('idx').reset_index(drop=True)
     return merged

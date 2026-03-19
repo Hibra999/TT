@@ -282,17 +282,44 @@ ws_meta_sota = bp_sm.get('window_size', 10) if meta_model_sota is not None else 
 
 # Generando Predicciones Base
 print(f'[9/11] Predicciones en Set de Prueba (Modelos Base)...')
+
+# LGB y CatBoost no necesitan contexto secuencial
 pl, _ = lgb_predict_test(Xt, yt, Xe, bp_l)
 pc, _ = cb_predict_test(Xt, yt, Xe, bp_c)
 
-pt, _, _ = tx_predict_test(Xt, yt, Xe, ye, bp_t, device, seq_len=96, pred_len=1, features='MS')
-if len(pt) < len(ye): tmp = np.full(len(ye), np.nan); tmp[len(ye) - len(pt):] = pt; pt = tmp
+# ── TimeXer: prepend contexto de entrenamiento ──
+ctx_tx = 96  # seq_len
+Xt_tail_tx = Xt.iloc[-ctx_tx:]
+yt_tail_tx = yt.iloc[-ctx_tx:]
+Xe_ctx_tx = pd.concat([Xt_tail_tx, Xe], axis=0).reset_index(drop=True)
+ye_ctx_tx = pd.concat([yt_tail_tx, ye], axis=0).reset_index(drop=True)
 
-pm, _ = moirai_predict_test(yt, ye, bp_m, model_size='small', freq='D')
-if len(pm) < len(ye): tmp = np.full(len(ye), np.nan); tmp[len(ye) - len(pm):] = pm; pm = tmp
+pt_full, _, _ = tx_predict_test(
+    Xt, yt, Xe_ctx_tx, ye_ctx_tx, bp_t, device,
+    seq_len=96, pred_len=1, features='MS'
+)
+pt = pt_full[-len(ye):]  # Recortar: solo la porción de test real
 
+# ── Moirai: prepend contexto de entrenamiento ──
+ctx_mo = bp_m.get('context_length', 96)
+yt_tail_mo = yt.iloc[-ctx_mo:]
+ye_ctx_mo = pd.concat([yt_tail_mo, ye], axis=0).reset_index(drop=True)
+
+pm_full, _ = moirai_predict_test(
+    pd.concat([yt.iloc[-ctx_mo:], yt], axis=0).reset_index(drop=True),
+    ye_ctx_mo, bp_m, model_size='small', freq='D'
+)
+pm = pm_full[-len(ye):]  # Recortar: solo la porción de test real
+
+# XGBoost y Base LSTM (no secuenciales o manejan su propio contexto)
 px, _ = train_final_xgb(Xt, yt, Xe, bp_x)
 pb, _ = train_final_base_lstm(Xt, yt, Xe, bp_b, device)
+
+# Verificar que TODOS los base models cubren el test completo
+for name, arr in [('LGB', pl), ('CB', pc), ('TX', pt), ('MO', pm),
+                  ('XG', px), ('BL', pb)]:
+    n_valid = (~np.isnan(arr)).sum()
+    print(f'  [{name}] {n_valid}/{len(ye)} predicciones válidas')
 
 
 # Generando Predicciones Meta
@@ -301,44 +328,43 @@ pmt_actual = np.full(len(ye), np.nan)
 pmt_ablation = np.full(len(ye), np.nan)
 pmt_sota = np.full(len(ye), np.nan)
 
-# Alinear todos los metas al mismo índice de inicio de test
-start_idx = max(ws_meta_actual, ws_meta_ablation, ws_meta_sota) - 1
-
 if meta_model_actual is not None:
-    # Sin _ffill: usar predicciones raw para evitar datos artificiales
     test_matrix_actual = np.column_stack([pl, pc, pt, pm]).astype(np.float32)
     meta_model_actual.eval()
     with torch.no_grad():
-        for i in range(start_idx, len(ye)):
+        for i in range(ws_meta_actual - 1, len(ye)):
             window = test_matrix_actual[i - ws_meta_actual + 1:i + 1]
             if not np.isnan(window).any():
                 x_t = torch.from_numpy(window).unsqueeze(0).to(device)
                 pmt_actual[i] = meta_model_actual(x_t).cpu().item()
+    print(f'  [MT] {(~np.isnan(pmt_actual)).sum()}/{len(ye)} válidas')
 
 if meta_model_ablation is not None:
     test_matrix_ablation = np.column_stack([pl, pc, pm]).astype(np.float32)
     meta_model_ablation.eval()
     with torch.no_grad():
-        for i in range(start_idx, len(ye)):
+        for i in range(ws_meta_ablation - 1, len(ye)):
             window = test_matrix_ablation[i - ws_meta_ablation + 1:i + 1]
             if not np.isnan(window).any():
                 x_t = torch.from_numpy(window).unsqueeze(0).to(device)
                 pmt_ablation[i] = meta_model_ablation(x_t).cpu().item()
+    print(f'  [AB] {(~np.isnan(pmt_ablation)).sum()}/{len(ye)} válidas')
 
 if meta_model_sota is not None:
     test_matrix_sota = np.column_stack([pl, pc, px, pb]).astype(np.float32)
     meta_model_sota.eval()
     with torch.no_grad():
-        for i in range(start_idx, len(ye)):
+        for i in range(ws_meta_sota - 1, len(ye)):
             window = test_matrix_sota[i - ws_meta_sota + 1:i + 1]
             if not np.isnan(window).any():
                 x_t = torch.from_numpy(window).unsqueeze(0).to(device)
                 pmt_sota[i] = meta_model_sota(x_t).cpu().item()
+    print(f'  [SM] {(~np.isnan(pmt_sota)).sum()}/{len(ye)} válidas')
 
-# Truncar las predicciones base para que inicien exactamente al mismo tiempo que los Meta Learners
+# Solo truncar las primeras ws-1 posiciones de base models (warm-up del meta)
+start_idx = max(ws_meta_actual, ws_meta_ablation, ws_meta_sota) - 1
 for arr in [pl, pc, pt, pm, px, pb]:
-    if start_idx < len(arr):
-        arr[:start_idx] = np.nan
+    arr[:start_idx] = np.nan
 
 
 # Métricas y reconstrucciones
@@ -408,6 +434,14 @@ for km, v in preds_p.items():
 # Ordenar el reporte por MAE descendente para mejor visualización
 mp.sort(key=lambda x: x['MAE'])
 
+# [DEBUG] Verificar que 'Ensamble Actual' (MT) esté presente en mp
+mt_nombres = [m_['Modelo'] for m_ in mp]
+print(f"[DEBUG] Modelos en mp: {mt_nombres}")
+assert 'Ensamble Actual' in mt_nombres, (
+    "[ERROR] 'Ensamble Actual' no aparece en mp. "
+    "Verifica que meta_model_actual no sea None y que test_matrix_actual no tenga NaNs en TX o MO."
+)
+
 # Restringir reporte al periodo de predicciones externas si existe, sino ultimo 10%
 if idx_start_ext is not None:
     zs = idx_start_ext
@@ -467,7 +501,15 @@ def generate_compare_report(token, cp, gi_v, pr_r, preds_p, mp, MDL, zs, ze, out
                 if km in ['MT', 'AB', 'SM', 'XGB_META_EXT']:
                     mp_metas.append(r)
                 break
-    mp_metas.sort(key=lambda x: x['MAE'])
+    # Forzar orden explícito de filas
+    orden = [
+        'Ensamble Actual',
+        'Ours (Ensamble Actual Sin TimeXer)',
+        'Yu et al. [44] 2025',
+        'Parker et al. 2025'
+    ]
+    mp_metas.sort(key=lambda x: orden.index(x['Modelo'])
+                  if x['Modelo'] in orden else 99)
         
     html = f"""<!DOCTYPE html>
 <html lang="es">
@@ -522,21 +564,28 @@ def generate_compare_report(token, cp, gi_v, pr_r, preds_p, mp, MDL, zs, ze, out
   </div>
 
   <div class="card"><h2>Metricas Generales de los Meta Learners</h2>
-    <table class="metrics-table"><thead><tr><th>Modelo</th><th>MSE</th><th>RMSE</th><th>MAE</th><th>R2</th></tr></thead><tbody>
+    <table class="metrics-table"><thead><tr><th>Modelo</th><th>MSE</th><th>RMSE</th><th>MAE</th><th>R2</th><th>DA (%)</th></tr></thead><tbody>
 """
     best_vals = {}
     if mp_metas:
-        for mn in ['MSE', 'RMSE', 'MAE', 'R2']:
-            vals = [m_[mn] for m_ in mp_metas]
-            if vals: best_vals[mn] = max(vals) if mn == 'R2' else min(vals)
-        
+        for mn in ['MSE', 'RMSE', 'MAE', 'R2', 'DA']:
+            vals = [m_[mn] for m_ in mp_metas if mn in m_ and not np.isnan(m_[mn])]
+            if vals:
+                best_vals[mn] = max(vals) if mn in ['R2', 'DA'] else min(vals)
+
     def _fmt(val, mn):
-        if mn not in best_vals: return f'{val:.6f}'
-        s = f'{val:.6f}'
-        return s # Removed conditional highlighting
-        
+        if mn == 'DA':
+            s = f'{val:.2f}%'
+        else:
+            s = f'{val:.6f}'
+        if mn in best_vals and abs(val - best_vals[mn]) < 1e-9:
+            return f'<td style="background:#d4edda">{s}</td>'
+        return f'<td>{s}</td>'
+
     for i, m_ in enumerate(mp_metas):
-        html += f'<tr><td><span class="model-badge" style="background:{m_["Color"]}">{m_["Modelo"]}</span></td><td>{_fmt(m_["MSE"], "MSE")}</td><td>{_fmt(m_["RMSE"], "RMSE")}</td><td>{_fmt(m_["MAE"], "MAE")}</td><td>{_fmt(m_["R2"], "R2")}</td></tr>\n'
+        da_val = m_.get('DA', float('nan'))
+        da_fmt = _fmt(da_val, 'DA') if not np.isnan(da_val) else '<td>N/A</td>'
+        html += f'<tr><td><span class="model-badge" style="background:{m_["Color"]}">{m_["Modelo"]}</span></td>{_fmt(m_["MSE"], "MSE")}{_fmt(m_["RMSE"], "RMSE")}{_fmt(m_["MAE"], "MAE")}{_fmt(m_["R2"], "R2")}{da_fmt}</tr>\n'
         
     html += """    </tbody></table></div>
   <div class="card"><h2>Prediccion sobre LogReturn_MinMax (Variable Objetivo)</h2>
@@ -693,6 +742,12 @@ drawMetricBar('chart-mae', 'MAE', 'MAE', minFn, fmt4);
 drawMetricBar('chart-r2', 'R2', 'R2', maxFn, fmt4);
 drawMetricBar('chart-da', 'DA', 'DA (%)', maxFn, fmtDA);
 </script></body></html>"""
+    # Asserts de sanidad antes de escribir
+    assert 'Ensamble Actual' in html, \
+        "[ERROR] Fila 'Ensamble Actual' no fue insertada en la tabla de métricas"
+    assert 'DA (%)' in html, \
+        "[ERROR] Columna DA (%) no fue insertada en la tabla"
+
     out_html = os.path.join(out_dir, 'report_compare.html')
     with open(out_html, 'w', encoding='utf-8') as fh: fh.write(html)
     print(f'Listo Comparativa Limpia: {out_html}')
@@ -894,9 +949,9 @@ if os.path.exists(html_path):
                 <thead><tr><th>Modelo A</th><th>Modelo B</th><th>Estadístico DM</th><th>p-valor</th><th>Significativo</th></tr></thead>
                 <tbody>"""
         for r in dm_results:
-            st = f'<strong style="color:black">{r["stat"]:.4f}</strong>' if r['sig'] else f'{r["stat"]:.4f}'
-            pv = f'<strong style="color:black">{r["p_value"]:.4f}</strong>' if r['sig'] else f'{r["p_value"]:.4f}'
-            sig_text = '<strong style="color:black">SÍ</strong>' if r['sig'] else 'No'
+            st = f'<strong style="color:#000">{r["stat"]:.4f}</strong>' if r['sig'] else f'{r["stat"]:.4f}'
+            pv = f'<strong style="color:#000">{r["p_value"]:.4f}</strong>' if r['sig'] else f'{r["p_value"]:.4f}'
+            sig_text = '<strong style="color:#000">SÍ</strong>' if r['sig'] else 'No'
             dm_html += f'<tr><td>{r["model_a"]}</td><td>{r["model_b"]}</td><td>{st}</td><td>{pv}</td><td>{sig_text}</td></tr>'
         dm_html += "</tbody></table></div>"
         container.append(BeautifulSoup(dm_html, 'html.parser'))

@@ -211,7 +211,7 @@ def objective_timexer_global(trial,X,y,splitter,device=None,seq_len=96,pred_len=
         if len(train_ds)<=0:
             print(f"Skipping fold {fold_num}: len(train_ds) <= 0")
             continue
-        train_loader=DataLoader(train_ds,batch_size=batch_size,shuffle=True,drop_last=True)
+        train_loader=DataLoader(train_ds,batch_size=batch_size,shuffle=True,drop_last=False)
         if len(train_loader)==0:
             print(f"Skipping fold {fold_num}: len(train_loader) == 0 (batch_size={batch_size}, n_samples={len(train_ds)})")
             continue
@@ -225,8 +225,7 @@ def objective_timexer_global(trial,X,y,splitter,device=None,seq_len=96,pred_len=
                 xb,yb=xb.to(device),yb.to(device);optimizer.zero_grad()
                 loss=criterion(model(xb,None,None,None).squeeze(-1),yb)
                 if torch.isnan(loss):
-                    print(f"Returning INF: Loss is NaN! xb shape: {xb.shape}")
-                    return float("inf")
+                    continue
                 loss.backward();nn.utils.clip_grad_norm_(model.parameters(),1.0);optimizer.step();losses.append(loss.item())
             ml=np.mean(losses)
             if scheduler:scheduler.step()
