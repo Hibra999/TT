@@ -86,7 +86,7 @@ MDL = {
 
 # ===== CONFIG =====
 TOKEN = '^GSPC'
-N_LGB, N_CB = 10,       
+N_LGB, N_CB = 10, 10
 N_TX, N_MO = 10, 10
 N_XG, N_BL = 10, 10
 N_MT, N_AB, N_SM = 10, 10, 10
@@ -99,6 +99,31 @@ test_end = '2025-12-31'
 
 START, END = train_start, test_end
 # ==================
+
+# ===== CUDA STATUS CHECK - ALL MODELS =====
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+print('')
+print('=' * 70)
+print(' ' * 20 + 'CUDA STATUS - ALL MODELS')
+print('=' * 70)
+print(f'PyTorch CUDA Available: {torch.cuda.is_available()}')
+if torch.cuda.is_available():
+    print(f'  CUDA Version:     {torch.version.cuda}')
+    print(f'  Device Count:     {torch.cuda.device_count()}')
+    print(f'  Device Name:      {torch.cuda.get_device_name(0)}')
+print('-' * 70)
+print('MODEL BY MODEL CUDA USAGE:')
+print('-' * 70)
+print(f'  LightGBM:     {"CUDA" if device.type == "cuda" else "CPU"} (via device parameter in objective)')
+print(f'  CatBoost:     {"CUDA" if device.type == "cuda" else "CPU"} (via task_type parameter)')
+print(f'  TimeXer:      {"CUDA" if device.type == "cuda" else "CPU"} (device={device})')
+print(f'  Moirai-MoE:   {"CUDA" if device.type == "cuda" else "CPU"} (device={device})')
+print(f'  XGBoost:      {"CUDA" if device.type == "cuda" else "CPU"} (via tree_method=gpu_hist)')
+print(f'  Base LSTM:    {"CUDA" if device.type == "cuda" else "CPU"} (device={device})')
+print(f'  Meta LSTM:    {"CUDA" if device.type == "cuda" else "CPU"} (device={device})')
+print('=' * 70)
+print('')
+# ==========================================
 
 print(f'[1/11] Descargando datos...')
 download_yf(['KO', 'AAPL', 'NVDA', 'JNJ', '^GSPC', 'GC=F', 'CBOE'], START, END)
@@ -182,7 +207,6 @@ print(f'[4/11] Split Walk-Forward...')
 k = 5; sp = wfrw(yt, k=k, fh_val=30)
 
 # Training Base Models
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f'[5/11] Entrenando Modelos Base ({device})...')
 oof_l, oof_c = {}, {}
 print('  > LightGBM (Compartido)...')

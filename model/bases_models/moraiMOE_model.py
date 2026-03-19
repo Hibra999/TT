@@ -33,7 +33,8 @@ class MoiraiMoEWrapper:
     def __init__(self,model_size:str='large',prediction_length:int=30,context_length:int=240,patch_size:int=16,num_samples:int=100,batch_size:int=32,device:Optional[torch.device]=None,use_cache:bool=True):
         self.model_size,self.prediction_length,self.context_length=model_size,prediction_length,context_length
         self.patch_size,self.num_samples,self.batch_size=patch_size,num_samples,batch_size
-        self.device=device or torch.device('cuda'if torch.cuda.is_available()else'cpu')
+        # Use CUDA if available and device not explicitly set to CPU
+        self.device=device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.use_cache,self.model,self.predictor,self._module=use_cache,None,None,None
         self._load_model()
     def _load_model(self):

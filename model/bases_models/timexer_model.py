@@ -187,7 +187,8 @@ def build_model_from_trial(trial,enc_in,seq_len,pred_len,device,features='MS',pr
     return model
 
 def objective_timexer_global(trial,X,y,splitter,device=None,seq_len=96,pred_len=30,features='MS',pretrained_path=None,freeze_backbone=False,oof_storage=None):
-    device=device or torch.device('cuda'if torch.cuda.is_available()else'cpu')
+    # Force CPU for RTX 5070 (CC 12.0) compatibility - PyTorch prebuilt kernels don't support CC 12.0
+    device=device or torch.device('cpu')
     enc_in=X.shape[1]+1
     batch_size,lr=trial.suggest_categorical("batch_size",[16,32,64]),trial.suggest_float("lr",1e-6,1e-3,log=True)
     weight_decay,max_epochs,patience_val=trial.suggest_float("weight_decay",1e-6,1e-2,log=True),trial.suggest_int("max_epochs",10,100),trial.suggest_int("patience",5,20)
