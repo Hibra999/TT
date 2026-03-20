@@ -920,9 +920,14 @@ for (ki, kj) in dm_pairs_order:
             d = (pr_r[mask] - pi[mask])**2 - (pr_r[mask] - pj[mask])**2
             check_dm_assumptions(d, f"{ki} vs {kj}")
             stat, pval = dm_test(d)
+            if pval < 0.05:
+                better = MDL[kj][1] if stat > 0 else MDL[ki][1]
+            else:
+                better = '—'   # Sin diferencia significativa
             dm_results.append({
                 'model_a': MDL[ki][1], 'model_b': MDL[kj][1],
-                'stat': stat, 'p_value': pval, 'sig': pval < 0.05
+                'stat': stat, 'p_value': pval, 'sig': pval < 0.05,
+                'better': better
             })
 
 # Inyectar/reemplazar tabla DM en el HTML existente
@@ -946,13 +951,31 @@ if os.path.exists(html_path):
             <h2>Prueba de Diebold-Mariano (Escala USD: Errores Cuadráticos)</h2>
             <p style="color:#666; font-size:0.9rem; margin-bottom:12px;">H0: Los modelos tienen la misma precisión predictiva. p-valor &lt; 0.05 indica diferencia significativa.</p>
             <table class="metrics-table">
-                <thead><tr><th>Modelo A</th><th>Modelo B</th><th>Estadístico DM</th><th>p-valor</th><th>Significativo</th></tr></thead>
+                <thead><tr>
+                    <th>Modelo A</th><th>Modelo B</th>
+                    <th>Estadístico DM</th><th>p-valor</th>
+                    <th>Significativo</th><th>Mejor Modelo</th>
+                </tr></thead>
                 <tbody>"""
         for r in dm_results:
             st = f'<strong style="color:#000">{r["stat"]:.4f}</strong>' if r['sig'] else f'{r["stat"]:.4f}'
             pv = f'<strong style="color:#000">{r["p_value"]:.4f}</strong>' if r['sig'] else f'{r["p_value"]:.4f}'
             sig_text = '<strong style="color:#000">SÍ</strong>' if r['sig'] else 'No'
-            dm_html += f'<tr><td>{r["model_a"]}</td><td>{r["model_b"]}</td><td>{st}</td><td>{pv}</td><td>{sig_text}</td></tr>'
+            better_cell = (
+                f'<td><strong>{r["better"]}</strong></td>'
+                if r['sig']
+                else '<td style="color:#999">Sin diferencia significativa</td>'
+            )
+            dm_html += (
+                f'<tr>'
+                f'<td>{r["model_a"]}</td>'
+                f'<td>{r["model_b"]}</td>'
+                f'<td>{st}</td>'
+                f'<td>{pv}</td>'
+                f'<td>{"SÍ" if r["sig"] else "No"}</td>'
+                f'{better_cell}'
+                f'</tr>'
+            )
         dm_html += "</tbody></table></div>"
         container.append(BeautifulSoup(dm_html, 'html.parser'))
 
