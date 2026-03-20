@@ -748,14 +748,20 @@ drawMetricBar('chart-da', 'DA', 'DA (%)', maxFn, fmtDA);
     assert 'DA (%)' in html, \
         "[ERROR] Columna DA (%) no fue insertada en la tabla"
 
-    out_html = os.path.join(out_dir, 'report_compare.html')
+    safe_token = token.replace('/', '-').replace('^', '').replace('=', '-')
+    out_html = os.path.join(out_dir, f'report_compare_{safe_token}.html')
     with open(out_html, 'w', encoding='utf-8') as fh: fh.write(html)
-    print(f'Listo Comparativa Limpia: {out_html}')
+    print(f'[REPORTE] Guardado en: {out_html}')
 
-generate_compare_report(TOKEN, cp, gi_v, pr_r, preds_p, mp, MDL, zs, ze, os.path.dirname(__file__), ye_vals=yv, meta_raw_preds=meta_raw_preds, base_raw_preds=base_raw_preds)
+# Carpeta de reportes (se crea si no existe)
+reports_dir = os.path.join(os.path.dirname(__file__), 'reports')
+os.makedirs(reports_dir, exist_ok=True)
+
+generate_compare_report(TOKEN, cp, gi_v, pr_r, preds_p, mp, MDL, zs, ze, reports_dir, ye_vals=yv, meta_raw_preds=meta_raw_preds, base_raw_preds=base_raw_preds)
 
 # ===== INYECTAR DA Y CORREGIR TABLA DE META LEARNERS + METRICAS BAR CHARTS =====
-html_path_meta = os.path.join(os.path.dirname(__file__), 'report_compare.html')
+safe_token = TOKEN.replace('/', '-').replace('^', '').replace('=', '-')
+html_path_meta = os.path.join(reports_dir, f'report_compare_{safe_token}.html')
 if os.path.exists(html_path_meta):
     with open(html_path_meta, 'r', encoding='utf-8') as f:
         soup_meta = BeautifulSoup(f.read(), 'html.parser')
@@ -931,7 +937,8 @@ for (ki, kj) in dm_pairs_order:
             })
 
 # Inyectar/reemplazar tabla DM en el HTML existente
-html_path = os.path.join(os.path.dirname(__file__), 'report_compare.html')
+safe_token = TOKEN.replace('/', '-').replace('^', '').replace('=', '-')
+html_path = os.path.join(reports_dir, f'report_compare_{safe_token}.html')
 if os.path.exists(html_path):
     with open(html_path, 'r', encoding='utf-8') as f:
         soup = BeautifulSoup(f.read(), 'html.parser')
