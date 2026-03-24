@@ -2,6 +2,21 @@ import lightgbm as lgb
 from sklearn.metrics import mean_absolute_error
 import numpy as np
 
+def _get_lgb_device() -> str:
+    """Retorna 'gpu' si OpenCL está disponible, si no 'cpu'."""
+    try:
+        import lightgbm as _lgb
+        _test = _lgb.LGBMRegressor(device="gpu", n_estimators=1, verbose=-1)
+        import numpy as _np
+        _X = _np.zeros((10, 1))
+        _y = _np.zeros(10)
+        _test.fit(_X, _y)
+        return "gpu"
+    except Exception:
+        return "cpu"
+
+_LGB_DEVICE = _get_lgb_device()
+
 def objective_global(trial, X, y, splitter, oof_storage=None):
     boosting_type = trial.suggest_categorical("boosting_type", ["gbdt", "dart"])
     param = {
@@ -20,7 +35,7 @@ def objective_global(trial, X, y, splitter, oof_storage=None):
         "path_smooth": trial.suggest_float("path_smooth", 0.0, 10.0),
         "extra_trees": trial.suggest_categorical("extra_trees", [True, False]),
         "random_state": 42,
-        "device": "gpu",
+        "device": _LGB_DEVICE,
         "verbose": -1
     }
     
