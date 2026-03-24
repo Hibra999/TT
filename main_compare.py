@@ -284,7 +284,7 @@ try:
         showlegend=False, hoverinfo='skip'
     ))
     fig_mic.update_layout(
-        title=dict(text='Maximal Information Coefficient (MIC) - Feature Importance',
+        title=dict(text=f'{TOKEN} — Maximal Information Coefficient (MIC) - Feature Importance',
                    x=0.5, font=dict(size=14, color='#000')),
         xaxis=dict(title='MIC Score', range=[mn_mic - 0.001, mx_mic + 0.001],
                    showgrid=False, linecolor='#ccc'),
