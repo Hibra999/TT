@@ -222,16 +222,18 @@ drop = [c for c in df_f.columns if df_f[c].max() - df_f[c].min() < 1e-8]
 df_f = df_f.drop(columns=drop).replace([np.inf, -np.inf], 0.0)
 lc_r = lc_r.replace([np.inf, -np.inf], 0.0)
 
-# Dividir por fecha de inicio de test (2026-01-01) en lugar de un %.
+# Dividir por fecha de inicio y fin de test
 dates = pd.to_datetime(df['Date_final']).iloc[orig_idx_array].reset_index(drop=True)
-mask = dates >= pd.to_datetime(test_start)
-if mask.any():
-    ts = mask.idxmax()
+mask_test = (dates >= pd.to_datetime(test_start)) & (dates <= pd.to_datetime(test_end))
+if mask_test.any():
+    ts = mask_test.idxmax()  # Inicio del test
+    te = mask_test[::-1].idxmax()  # Fin del test (ultimo True)
 else:
     ts = int(len(df_f) * .9)
+    te = len(df_f)
 
-Xtr, Xte = df_f.iloc[:ts].copy(), df_f.iloc[ts:].copy()
-ytr, yte = lc_r.iloc[:ts].copy(), lc_r.iloc[ts:].copy()
+Xtr, Xte = df_f.iloc[:ts].copy(), df_f.iloc[ts:te+1].copy()
+ytr, yte = lc_r.iloc[:ts].copy(), lc_r.iloc[ts:te+1].copy()
 
 sf = MinMaxScaler()
 Xtr_s = pd.DataFrame(sf.fit_transform(Xtr), columns=Xtr.columns, index=Xtr.index)
