@@ -103,7 +103,7 @@ N_XG, N_BL = 10, 10
 N_MT, N_AB, N_SM = 10 , 10, 10 
 
 from datetime import datetime
-train_start = '2020-01-01'
+train_start = '2015-01-01'
 train_end = '2025-12-31'
 if TOKEN == 'BTC/USDT' or TOKEN == 'ETH/USDT':
     test_start = '2024-10-19' # Sincronizado con el inicio de predicciones externas
