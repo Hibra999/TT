@@ -142,32 +142,36 @@ def train_final_and_predict_test(y_train, y_test, best_params, model_size='small
         use_cache=True
     )
     
-    predictions = []
-    test_indices = []
+    predictions = np.full(len(y_test_arr), np.nan)
     
     for i in range(len(y_test_arr)):
         global_idx = train_len + i
         ctx_start = max(0, global_idx - ctx_len)
         ctx_end = global_idx
+        ctx_data = full_series[ctx_start:ctx_end]
         
-        if ctx_end > ctx_start and (ctx_end - ctx_start) >= 10:
-            try:
-                # Para test recursivo aún tenemos que hacerlo punto por punto
-                # ya que futuras predicciones dependen del punto anterior (t+1 depende de t-hat).
-                # Pero evitamos re-crear wrapper ni vaciar caché innecesariamente dentro de cada step
-                ds = prepare_simple_dataset(full_series[ctx_start:ctx_end], freq=freq)
-                fc = list(wrapper.predictor.predict(ds))
-                if fc:
-                    pred = float(np.median(fc[0].samples))
-                    predictions.append(pred)
-                    test_indices.append(i)
-                    full_series[global_idx] = pred
-            except Exception as e:
-                pass
+        # Pad con ceros si el contexto es demasiado corto
+        min_ctx = 10
+        if len(ctx_data) < min_ctx:
+            pad_len = min_ctx - len(ctx_data)
+            ctx_data = np.concatenate([np.zeros(pad_len), ctx_data])
+        
+        try:
+            ds = prepare_simple_dataset(ctx_data, freq=freq)
+            fc = list(wrapper.predictor.predict(ds))
+            if fc:
+                pred = float(np.median(fc[0].samples))
+                predictions[i] = pred
+                full_series[global_idx] = pred
+        except Exception as e:
+            # Si falla una predicción individual, usar la última predicción válida
+            if i > 0 and not np.isnan(predictions[i-1]):
+                predictions[i] = predictions[i-1]
+                full_series[global_idx] = predictions[i]
     
     # Limpiar
     del wrapper.model, wrapper.predictor, wrapper
     torch.cuda.empty_cache()
     gc.collect()
     
-    return np.array(predictions), np.array(test_indices)
+    return predictions, np.arange(len(y_test_arr))

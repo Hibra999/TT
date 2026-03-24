@@ -361,8 +361,7 @@ def train_final_and_predict_test(X_train, y_train, X_test, y_test, best_params, 
     
     # Predecir en test (recursivo: usar predicciones propias, no y_test real)
     model.eval()
-    predictions = []
-    test_indices = []
+    predictions = np.full(len(X_test_v), np.nan)
     
     with torch.no_grad():
         for i in range(len(X_test_v)):
@@ -371,16 +370,22 @@ def train_final_and_predict_test(X_train, y_train, X_test, y_test, best_params, 
             window_end = global_idx
             
             if window_start < 0:
-                continue
+                # Pad con ceros al inicio si no hay suficiente contexto
+                available = full_data[0:window_end]
+                pad_len = seq_len - len(available)
+                x_window = np.concatenate([
+                    np.zeros((pad_len, full_data.shape[1]), dtype=np.float32),
+                    available
+                ], axis=0)
+            else:
+                x_window = full_data[window_start:window_end]
             
-            x_window = full_data[window_start:window_end]
             xt = torch.from_numpy(x_window.astype(np.float32)).unsqueeze(0).to(device)
             out = model(xt, None, None, None).squeeze(-1)
             pred = float(out[0, 0].cpu().numpy())
-            predictions.append(pred)
-            test_indices.append(i)
+            predictions[i] = pred
             
             # Escribir predicción en full_data para que ventanas futuras la usen
             full_data[global_idx, -1] = pred
     
-    return np.array(predictions), np.array(test_indices), model
+    return predictions, np.arange(len(X_test_v)), model
