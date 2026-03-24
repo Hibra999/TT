@@ -148,19 +148,41 @@ df = pd.read_csv(os.path.join(os.path.dirname(__file__), 'data', 'tokens', f'{TO
 csv_ext = os.path.join(os.path.dirname(__file__), 'Parker_predictions', f'{TOKEN.replace("/", "-")}_all_models_predictions.csv')
 ext_preds_map = {}
 idx_start_ext = None
-if os.path.exists(csv_ext):
-    print(f'[1.5/11] Alineando predicciones externas...')
-    df_ext = pd.read_csv(csv_ext)
-    # Coincidencia por 'Actual' (High)
-    for i in range(len(df) - len(df_ext) + 1):
-        if np.allclose(df['High'].iloc[i:i+len(df_ext)].values, df_ext['Actual'].values, atol=1e-2):
-            idx_start_ext = i
-            for col in ['LSTM', 'GRU', 'ARIMA', 'Random Forest', 'Transformer', 'XGBoost']:
-                key = col.upper().replace(' ', '_') + '_EXT'
-                full_raw = np.full(len(df), np.nan)
-                full_raw[idx_start_ext:idx_start_ext+len(df_ext)] = df_ext[col].values
-                ext_preds_map[key] = full_raw
-            break
+
+# [DEBUG] Verificar ruta y existencia
+print(f'[1.5/11] Buscando predicciones externas en: {os.path.abspath(csv_ext)}')
+if not os.path.exists(csv_ext):
+    parker_dir = os.path.join(os.path.dirname(__file__), 'Parker_predictions')
+    disponibles = os.listdir(parker_dir) if os.path.isdir(parker_dir) else []
+    raise FileNotFoundError(
+        f'[Parker] Archivo no encontrado: {os.path.abspath(csv_ext)}\n'
+        f'  Archivos en carpeta: {disponibles}'
+    )
+
+print(f'[1.5/11] Alineando predicciones externas...')
+df_ext = pd.read_csv(csv_ext, parse_dates=['Date'])
+# [DEBUG] Verificar carga
+print(f'  [Parker DEBUG] Primeras filas:\n{df_ext.head(3)}')
+print(f'  [Parker DEBUG] dtypes:\n{df_ext.dtypes}')
+print(f'  [Parker DEBUG] Columna Date es datetime: {pd.api.types.is_datetime64_any_dtype(df_ext["Date"])}')
+# Coincidencia por 'Actual' (High)
+for i in range(len(df) - len(df_ext) + 1):
+    if np.allclose(df['High'].iloc[i:i+len(df_ext)].values, df_ext['Actual'].values, atol=1e-2):
+        idx_start_ext = i
+        for col in ['LSTM', 'GRU', 'ARIMA', 'RF', 'Transformer', 'XGBoost']:
+            key = col.upper().replace(' ', '_') + '_EXT'
+            full_raw = np.full(len(df), np.nan)
+            full_raw[idx_start_ext:idx_start_ext+len(df_ext)] = df_ext[col].values
+            ext_preds_map[key] = full_raw
+        break
+
+# [DEBUG] Verificar alineación
+if idx_start_ext is not None:
+    print(f'  [Parker DEBUG] Alineado en idx={idx_start_ext}, filas merge={len(df_ext)}')
+    print(f'  [Parker DEBUG] Muestra XGBOOST_EXT (5 vals): {ext_preds_map["XGBOOST_EXT"][idx_start_ext:idx_start_ext+5]}')
+else:
+    print(f'  [Parker DEBUG] NO se encontró alineación. Rango Actual CSV: [{df_ext["Actual"].min():.4f}, {df_ext["Actual"].max():.4f}]')
+    print(f'  [Parker DEBUG] Rango High df: [{df["High"].min():.4f}, {df["High"].max():.4f}]')
 
 # Features
 print(f'[2/11] Construyendo Features (TA + Macro)...')
@@ -415,12 +437,15 @@ preds_p = {
     'MT':  safe_inv_recon(pmt_actual),
     'AB':  safe_inv_recon(pmt_ablation),
     'SM':  safe_inv_recon(pmt_sota),
-    'LSTM_EXT': ext_preds_map.get('LSTM_EXT', np.full(len(df), np.nan))[test_orig_indices],
-    'GRU_EXT': ext_preds_map.get('GRU_EXT', np.full(len(df), np.nan))[test_orig_indices],
-    'ARIMA_EXT': ext_preds_map.get('ARIMA_EXT', np.full(len(df), np.nan))[test_orig_indices],
-    'RF_EXT': ext_preds_map.get('RANDOM_FOREST_EXT', np.full(len(df), np.nan))[test_orig_indices],
-    'TRANS_EXT': ext_preds_map.get('TRANSFORMER_EXT', np.full(len(df), np.nan))[test_orig_indices],
-    'XGB_META_EXT': ext_preds_map.get('XGBOOST_EXT', np.full(len(df), np.nan))[test_orig_indices]
+    # Predicciones externas (Parker): los valores están en escala LogReturn_MinMax [0,1]
+    # igual que nuestros modelos, hay que aplicar safe_inv_recon para obtener USD.
+    # safe_inv_recon espera un array de longitud n (test completo) y aplica [val] internamente.
+    'LSTM_EXT':     safe_inv_recon(ext_preds_map.get('LSTM_EXT',        np.full(len(df), np.nan))[test_orig_indices]),
+    'GRU_EXT':      safe_inv_recon(ext_preds_map.get('GRU_EXT',         np.full(len(df), np.nan))[test_orig_indices]),
+    'ARIMA_EXT':    safe_inv_recon(ext_preds_map.get('ARIMA_EXT',       np.full(len(df), np.nan))[test_orig_indices]),
+    'RF_EXT':       safe_inv_recon(ext_preds_map.get('RF_EXT',          np.full(len(df), np.nan))[test_orig_indices]),
+    'TRANS_EXT':    safe_inv_recon(ext_preds_map.get('TRANSFORMER_EXT', np.full(len(df), np.nan))[test_orig_indices]),
+    'XGB_META_EXT': safe_inv_recon(ext_preds_map.get('XGBOOST_EXT',    np.full(len(df), np.nan))[test_orig_indices]),
 }
 preds_p['Ensamble Actual'] = preds_p['MT']  # Alias para acceso por nombre
 
@@ -485,15 +510,31 @@ for ext_key in ['LSTM_EXT', 'GRU_EXT', 'ARIMA_EXT', 'RF_EXT', 'TRANS_EXT']:
 import json
 def generate_compare_report(token, cp, gi_v, pr_r, preds_p, mp, MDL, zs, ze, out_dir, ye_vals=None, meta_raw_preds=None, base_raw_preds=None):
     """Genera report_compare.html aislador para los Ensambles"""
-    zoom_x = list(range(zs, ze))
-    zoom_close = [float(v) for v in cp[zs:ze]]
-    
+    # --- Bug 1 fix: Close (USD) debe tener el mismo dominio X que las predicciones.
+    # gi_v son los índices globales en cp correspondientes al set de prueba.
+    # pr_r son los precios Close reconstruidos alineados a gi_v.
+    # Usamos pr_r/gi_v como serie Close para evitar el recorte.
+    close_x = [int(x) for x in gi_v]
+    close_y = [float(v) for v in pr_r]
+
     zoom_models = {}
     for km, (cl, nm) in MDL.items():
         v = preds_p[km]
         m = ~np.isnan(v)
         if m.any():
             zoom_models[km] = {'name': nm, 'x': [int(x) for x in gi_v[m]], 'y': [float(y) for y in v[m]], 'color': cl}
+
+    # [DEBUG] Verificar Parker antes de graficar
+    parker_v = preds_p.get('XGB_META_EXT', np.array([]))
+    parker_valid = parker_v[~np.isnan(parker_v)] if len(parker_v) > 0 else np.array([])
+    print(f'  [Parker PLOT DEBUG] Puntos válidos XGB_META_EXT para graficar: {len(parker_valid)}')
+    if len(parker_valid) == 0:
+        print('  [Parker PLOT DEBUG] ADVERTENCIA: XGB_META_EXT está vacío/todo-NaN. No aparecerá en la gráfica.')
+    else:
+        print(f'  [Parker PLOT DEBUG] Rango USD: [{parker_valid.min():.2f}, {parker_valid.max():.2f}]')
+        print(f'  [Parker PLOT DEBUG] Rango Close USD: [{pr_r.min():.2f}, {pr_r.max():.2f}]')
+    assert len(parker_valid) > 0, '[Parker] XGB_META_EXT tiene 0 puntos válidos — revisar carga y escala'
+
     
     mp_metas = []
     # Métricas USD de los Meta Learners (MT, AB, SM) para interpretabilidad
@@ -644,7 +685,7 @@ def generate_compare_report(token, cp, gi_v, pr_r, preds_p, mp, MDL, zs, ze, out
                         }
         lr_data['_real'] = {'idx': lr_idx, 'y': lr_real}
 
-    html += f"const zoomX={json.dumps(zoom_x)};\nconst zoomClose={json.dumps(zoom_close)};\n"
+    html += f"const closeX={json.dumps(close_x)};\nconst closeY={json.dumps(close_y)};\n"
     html += f"const zoomModels={json.dumps(zoom_models)};\n"
     html += f"const metricsData={json.dumps(mp_metas)};\n"
     html += f"const lrData={json.dumps(lr_data)};\n"
@@ -678,8 +719,8 @@ function drawChart(divId, titleTxt, keys, metaKey) {
             marker: {size: 4, color: zoomModels[metaKey].color}
         });
     }
-    // 3) Close (USD) siempre al frente (zorder máximo)
-    data.push({x:zoomX, y:zoomClose, type:'scatter', mode:'lines', name:'Close (USD)', line:{color:'#000', width:2}});
+    // 3) Close (USD) siempre al frente (zorder máximo) — usa closeX/closeY alineado con el test set
+    data.push({x:closeX, y:closeY, type:'scatter', mode:'lines', name:'Close (USD)', line:{color:'#000', width:2}});
     Plotly.newPlot(divId, data, {...dL, title: {text: titleTxt, font: {size: 14, color: '#333'}}, xaxis: {...dL.xaxis, title: 'Indice'}, yaxis: {...dL.yaxis, title: 'USD'}, hovermode: 'x unified'}, {responsive: true});
 }
 
