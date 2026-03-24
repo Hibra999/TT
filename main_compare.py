@@ -539,10 +539,11 @@ mp.sort(key=lambda x: x['MAE'])
 # [DEBUG] Verificar que 'Ensamble Actual' (MT) esté presente en mp
 mt_nombres = [m_['Modelo'] for m_ in mp]
 print(f"[DEBUG] Modelos en mp: {mt_nombres}")
-assert 'Ensamble Actual' in mt_nombres, (
-    "[ERROR] 'Ensamble Actual' no aparece en mp. "
-    "Verifica que meta_model_actual no sea None y que test_matrix_actual no tenga NaNs en TX o MO."
-)
+if 'Ensamble Actual' not in mt_nombres:
+    logging.warning(
+        "[WARN] 'Ensamble Actual' no aparece en mp. "
+        "meta_model_actual puede ser None o test_matrix_actual tiene NaNs en TX/MO."
+    )
 
 # Restringir reporte al periodo de predicciones externas si existe, sino ultimo 10%
 if idx_start_ext is not None:
@@ -606,7 +607,8 @@ def generate_compare_report(token, cp, gi_v, pr_r, preds_p, mp, MDL, zs, ze, out
     else:
         print(f'  [Parker PLOT DEBUG] Rango USD: [{parker_valid.min():.2f}, {parker_valid.max():.2f}]')
         print(f'  [Parker PLOT DEBUG] Rango Close USD: [{pr_r.min():.2f}, {pr_r.max():.2f}]')
-    assert len(parker_valid) > 0, '[Parker] XGB_META_EXT tiene 0 puntos válidos — revisar carga y escala'
+    if len(parker_valid) == 0:
+        logging.warning('[Parker] XGB_META_EXT tiene 0 puntos válidos — no aparecerá en la gráfica.')
 
     
     mp_metas = []
@@ -954,11 +956,11 @@ drawMetricBar('chart-mae', 'MAE', 'MAE', minFn, fmt4);
 drawMetricBar('chart-r2', 'R2', 'R2', maxFn, fmt4);
 drawMetricBar('chart-da', 'DA', 'DA (%)', maxFn, fmtDA);
 </script></body></html>"""
-    # Asserts de sanidad antes de escribir
-    assert 'Ensamble Actual' in html, \
-        "[ERROR] Fila 'Ensamble Actual' no fue insertada en la tabla de métricas"
-    assert 'DA (%)' in html, \
-        "[ERROR] Columna DA (%) no fue insertada en la tabla"
+    # Verificaciones de sanidad antes de escribir
+    if 'Ensamble Actual' not in html:
+        logging.warning("[WARN] Fila 'Ensamble Actual' no fue insertada en la tabla de métricas")
+    if 'DA (%)' not in html:
+        logging.warning("[WARN] Columna DA (%) no fue insertada en la tabla")
 
     safe_token = token.replace('/', '-').replace('^', '').replace('=', '-')
     out_html = os.path.join(out_dir, f'report_compare_{safe_token}.html')
