@@ -247,6 +247,60 @@ feats, mic_v = top_k(Xtr_s, ytr_s, 15)
 Xt, Xe = Xtr_s[feats].reset_index(drop=True), Xte_s[feats].reset_index(drop=True)
 yt, ye = ytr_s.reset_index(drop=True), yte_s.reset_index(drop=True)
 
+# --- Gráfica MIC ---
+try:
+    import plotly.graph_objects as go
+    import plotly.colors as pc
+
+    # Ordenar de mayor a menor (top arriba en barras horizontales → reversed)
+    order = np.argsort(mic_v)  # ascending
+    feats_sorted = [feats[i] for i in order]
+    mic_sorted = [mic_v[i] for i in order]
+
+    # Normalizar scores a [0,1] para colormap
+    mic_arr = np.array(mic_sorted)
+    mn_mic, mx_mic = mic_arr.min(), mic_arr.max()
+    norm = (mic_arr - mn_mic) / (mx_mic - mn_mic) if mx_mic > mn_mic else np.full_like(mic_arr, 0.5)
+    bar_colors = pc.sample_colorscale('Viridis', norm.tolist())
+
+    fig_mic = go.Figure()
+    fig_mic.add_trace(go.Bar(
+        x=mic_sorted, y=feats_sorted, orientation='h',
+        marker=dict(color=bar_colors),
+        text=[f'{v:.3f}' for v in mic_sorted],
+        textposition='outside', textfont=dict(color='#000000', size=10),
+        showlegend=False
+    ))
+    # Invisible scatter for colorbar
+    fig_mic.add_trace(go.Scatter(
+        x=[None], y=[None], mode='markers',
+        marker=dict(
+            colorscale='Viridis', cmin=mn_mic, cmax=mx_mic,
+            colorbar=dict(title='MIC Score', thickness=15, len=0.8),
+            showscale=True, color=[mn_mic]
+        ),
+        showlegend=False, hoverinfo='skip'
+    ))
+    fig_mic.update_layout(
+        title=dict(text='Maximal Information Coefficient (MIC) - Feature Importance',
+                   x=0.5, font=dict(size=14, color='#000')),
+        xaxis=dict(title='MIC Score', range=[mn_mic - 0.001, mx_mic + 0.001],
+                   showgrid=False, linecolor='#ccc'),
+        yaxis=dict(tickfont=dict(size=11), showgrid=True,
+                   gridcolor='rgba(200,200,200,0.3)', linecolor='#ccc'),
+        plot_bgcolor='#fff', paper_bgcolor='#fff',
+        width=1200, height=max(400, len(feats) * 40),
+        margin=dict(l=200, r=80, t=60, b=50)
+    )
+    mic_dir = os.path.join(os.path.dirname(__file__), 'mic_features')
+    os.makedirs(mic_dir, exist_ok=True)
+    safe_tok = TOKEN.replace('/', '-').replace('^', '').replace('=', '-')
+    mic_path = os.path.join(mic_dir, f'mic_{safe_tok}.png')
+    fig_mic.write_image(mic_path, scale=2)
+    print(f'  [MIC] Gráfica guardada en: {mic_path}')
+except Exception as e:
+    logging.warning(f'[MIC] No se pudo generar la gráfica MIC: {e}')
+
 # Walk Forward
 print(f'[4/11] Split Walk-Forward...')
 # Usar 75% del data para training para asegurar que TimeXer/Moirai tengan suficientes muestras
