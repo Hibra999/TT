@@ -95,7 +95,7 @@ MDL = {
 }
 
 # ===== CONFIG =====
-TOKEN = 'BTC/USDT'
+TOKEN = 'ETH/USDT'
 N_LGB, N_CB = 10, 10
 N_TX, N_MO = 10, 10
 N_XG, N_BL = 10, 10 
