@@ -525,7 +525,7 @@ for ext_key in ['LSTM_EXT', 'GRU_EXT', 'ARIMA_EXT', 'RF_EXT', 'TRANS_EXT']:
         base_raw_preds[ext_key] = pmt_ext
 
 import json
-def generate_compare_report(token, cp, gi_v, pr_r, preds_p, mp, MDL, zs, ze, out_dir, ye_vals=None, meta_raw_preds=None, base_raw_preds=None):
+def generate_compare_report(token, cp, gi_v, pr_r, preds_p, mp, MDL, zs, ze, out_dir, ye_vals=None, meta_raw_preds=None, base_raw_preds=None, met_fn=None, da_fn=None):
     """Genera report_compare.html aislador para los Ensambles"""
     # --- Bug 1 fix: Close (USD) debe tener el mismo dominio X que las predicciones.
     # gi_v son los índices globales en cp correspondientes al set de prueba.
@@ -650,7 +650,101 @@ def generate_compare_report(token, cp, gi_v, pr_r, preds_p, mp, MDL, zs, ze, out
         html += f'<tr><td><span class="model-badge" style="background:{m_["Color"]}">{m_["Modelo"]}</span></td>{_fmt(m_["MSE"], "MSE")}{_fmt(m_["RMSE"], "RMSE")}{_fmt(m_["MAE"], "MAE")}{_fmt(m_["R2"], "R2")}{da_fmt}</tr>\n'
         
     html += """    </tbody></table></div>
-  <div class="card"><h2>Prediccion sobre LogReturn_MinMax (Variable Objetivo)</h2>
+"""
+
+    # ===== SECCIÓN: Métricas por Ensamble (Test Set — Escala USD) =====
+    ensemble_groups = [
+        ('Ensamble Actual', [
+            ('MT',  'Meta LSTM (Ensamble Actual)', True),
+            ('LGB', 'LightGBM', False),
+            ('CB',  'CatBoost', False),
+            ('TX',  'TimeXer', False),
+            ('MO',  'Moirai-MoE', False),
+        ]),
+        ('Ours (Sin TimeXer)', [
+            ('AB',  'Ours (Ensamble Actual Sin TimeXer)', True),
+            ('LGB', 'LightGBM', False),
+            ('CB',  'CatBoost', False),
+            ('MO',  'Moirai-MoE', False),
+        ]),
+        ('Yu et al. [44] 2025', [
+            ('SM',  'Yu et al. [44] 2025', True),
+            ('LGB', 'LightGBM', False),
+            ('CB',  'CatBoost', False),
+            ('XG',  'XGBoost', False),
+            ('BL',  'Base LSTM', False),
+        ]),
+        ('Parker et al. 2025', [
+            ('XGB_META_EXT', 'Parker et al. 2025', True),
+            ('LSTM_EXT',     'LSTM (Externo)', False),
+            ('GRU_EXT',      'GRU (Externo)', False),
+            ('ARIMA_EXT',    'ARIMA (Externo)', False),
+            ('RF_EXT',       'Random Forest (Externo)', False),
+            ('TRANS_EXT',    'Transformer (Externo)', False),
+        ]),
+    ]
+
+    html += '  <div class="card"><h2>M\u00e9tricas por Ensamble (Test Set &mdash; Escala USD)</h2>\n'
+
+    for ens_name, models in ensemble_groups:
+        html += f'    <h3 style="margin-top:20px;margin-bottom:10px;font-size:1.1rem;color:#333">{ens_name}</h3>\n'
+        html += '    <table class="metrics-table" style="margin-bottom:20px">\n'
+        html += '      <thead><tr><th>Modelo</th><th>MSE</th><th>RMSE</th><th>MAE</th><th>R2</th><th>DA (%)</th></tr></thead>\n'
+        html += '      <tbody>\n'
+
+        # Compute metrics for each model in this ensemble
+        ens_rows = []
+        for (key, label, is_meta) in models:
+            pred = preds_p.get(key)
+            if pred is None:
+                ens_rows.append({'key': key, 'label': label, 'is_meta': is_meta, 'valid': False})
+                continue
+            mask = (~np.isnan(pred)) & (~np.isnan(pr_r))
+            if mask.sum() > 0 and met_fn is not None and da_fn is not None:
+                m = met_fn(pr_r[mask], pred[mask])
+                da_val = da_fn(pr_r[mask], pred[mask]) if mask.sum() >= 2 else float('nan')
+                ens_rows.append({'key': key, 'label': label, 'is_meta': is_meta, 'valid': True,
+                                 'MSE': m['MSE'], 'RMSE': m['RMSE'], 'MAE': m['MAE'], 'R2': m['R2'], 'DA': round(da_val, 2)})
+            else:
+                ens_rows.append({'key': key, 'label': label, 'is_meta': is_meta, 'valid': False})
+
+        # Find best per column among valid rows
+        ens_best = {}
+        valid_rows = [r for r in ens_rows if r['valid']]
+        if valid_rows:
+            for mn in ['MSE', 'RMSE', 'MAE']:
+                vals = [r[mn] for r in valid_rows if not np.isnan(r[mn])]
+                if vals: ens_best[mn] = min(vals)
+            for mn in ['R2', 'DA']:
+                vals = [r[mn] for r in valid_rows if not np.isnan(r[mn])]
+                if vals: ens_best[mn] = max(vals)
+
+        # Render rows
+        for row in ens_rows:
+            border_style = ' style="border-top:2px solid #333"' if row['is_meta'] else ''
+            color = MDL[row['key']][0] if row['key'] in MDL else '#888'
+            badge = f'<span class="model-badge" style="background:{color}">{row["label"]}</span>'
+
+            if not row['valid']:
+                html += f'      <tr{border_style}><td>{badge}</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td></tr>\n'
+                continue
+
+            cells = ''
+            for mn in ['MSE', 'RMSE', 'MAE', 'R2']:
+                val = row[mn]
+                hi = ' style="background:#d4edda"' if mn in ens_best and abs(val - ens_best[mn]) < 1e-9 else ''
+                cells += f'<td{hi}>{val:.6f}</td>'
+            da_val = row['DA']
+            da_hi = ' style="background:#d4edda"' if 'DA' in ens_best and abs(da_val - ens_best['DA']) < 1e-9 else ''
+            cells += f'<td{da_hi}>{da_val:.2f}%</td>'
+
+            html += f'      <tr{border_style}><td>{badge}</td>{cells}</tr>\n'
+
+        html += '      </tbody>\n    </table>\n'
+
+    html += '  </div>\n'
+
+    html += """  <div class="card"><h2>Prediccion sobre LogReturn_MinMax (Variable Objetivo)</h2>
     <div class="charts-grid">
       <div id="lr-actual"></div>
       <div id="lr-ablation"></div>
@@ -819,7 +913,7 @@ drawMetricBar('chart-da', 'DA', 'DA (%)', maxFn, fmtDA);
 reports_dir = os.path.join(os.path.dirname(__file__), 'reports')
 os.makedirs(reports_dir, exist_ok=True)
 
-generate_compare_report(TOKEN, cp, gi_v, pr_r, preds_p, mp, MDL, zs, ze, reports_dir, ye_vals=yv, meta_raw_preds=meta_raw_preds, base_raw_preds=base_raw_preds)
+generate_compare_report(TOKEN, cp, gi_v, pr_r, preds_p, mp, MDL, zs, ze, reports_dir, ye_vals=yv, meta_raw_preds=meta_raw_preds, base_raw_preds=base_raw_preds, met_fn=met, da_fn=directional_accuracy)
 
 # ===== INYECTAR DA Y CORREGIR TABLA DE META LEARNERS + METRICAS BAR CHARTS =====
 safe_token = TOKEN.replace('/', '-').replace('^', '').replace('=', '-')
