@@ -95,7 +95,7 @@ MDL = {
 }
 
 # ===== CONFIG =====
-TOKEN = 'NVDA'
+TOKEN = 'BTC/USDT'
 N_LGB, N_CB = 10, 10
 N_TX, N_MO = 10, 10
 N_XG, N_BL = 10, 10 
@@ -249,7 +249,9 @@ yt, ye = ytr_s.reset_index(drop=True), yte_s.reset_index(drop=True)
 
 # Walk Forward
 print(f'[4/11] Split Walk-Forward...')
-k = 5; sp = wfrw(yt, k=k, fh_val=30)
+# Usar 75% del data para training para asegurar que TimeXer/Moirai tengan suficientes muestras
+# (seq_len=96 + pred_len=30 + 10 = 136 mínimo requerido)
+k = 5; sp = wfrw(yt, k=k, fh_val=30, window_ratio=0.75)
 
 # Training Base Models
 print(f'[5/11] Entrenando Modelos Base ({device})...')
@@ -296,8 +298,14 @@ bp_b = oof_b.get('params', sb.best_params)
 print(f'[6/11] Entrenando Meta LSTM (Ensamble Actual Completo)...')
 oof_df_actual = build_oof_dataframe(oof_l, oof_c, oof_t, oof_m, yt)
 print(f'  OOF matrix shape: {oof_df_actual.shape}')
+print(f'  OOF columns: {oof_df_actual.columns.tolist()}')
+print(f'  OOF NaN count per column: {oof_df_actual.isna().sum().to_dict()}')
+if len(oof_df_actual) < 20:
+    print(f'  [ERROR] OOF dataframe too small ({len(oof_df_actual)} samples). Required: >= 20')
 meta_model_actual, _, _, bp_mt, _ = optimize_lstm_meta(oof_df_actual, device, n_trials=N_MT)
 ws_meta_actual = bp_mt.get('window_size', 10) if meta_model_actual is not None else 10
+if meta_model_actual is None:
+    print(f'  [ERROR] meta_model_actual is None. Training failed.')
 
 # Meta Ensamble Ablation (Sin TimeXer)
 print(f'[7/11] Entrenando Meta LSTM Ours (Sin TimeXer)...')
