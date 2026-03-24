@@ -253,10 +253,11 @@ try:
     import plotly.graph_objects as go
     import plotly.colors as pc
 
-    # Ordenar de mayor a menor (top arriba en barras horizontales → reversed)
-    order = np.argsort(mic_v)  # ascending
-    feats_sorted = [feats[i] for i in order]
-    mic_sorted = [mic_v[i] for i in order]
+    # mic_v es un dict {feature_name: score} — extraer y ordenar ascendente
+    # (para barras horizontales, el de arriba es el último → mayor score arriba)
+    mic_items = sorted(mic_v.items(), key=lambda x: x[1])  # ascending by score
+    feats_sorted = [item[0] for item in mic_items]
+    mic_sorted = [item[1] for item in mic_items]
 
     # Normalizar scores a [0,1] para colormap
     mic_arr = np.array(mic_sorted)
