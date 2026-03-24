@@ -104,8 +104,12 @@ N_MT, N_AB, N_SM = 100 , 100, 100
 from datetime import datetime
 train_start = '2020-01-01'
 train_end = '2025-12-31'
-test_start = '2025-06-04' # Sincronizado con el inicio de predicciones externas
-test_end = '2025-12-31'
+if TOKEN == 'BTC/USDT' or TOKEN == 'ETH/USDT':
+    test_start = '2024-10-19' # Sincronizado con el inicio de predicciones externas
+    test_end = '2025-12-31'
+else:
+    test_start = '2024-10-16' # Sincronizado con el inicio de predicciones externas
+    test_end = '2025-12-31'
 
 START, END = train_start, test_end
 # ==================
@@ -140,8 +144,8 @@ download_yf(['KO', 'AAPL', 'NVDA', 'JNJ', '^GSPC', 'GC=F', 'CBOE'], START, END)
 download_cx(['BTC/USDT', 'ETH/USDT'], START, END)
 df = pd.read_csv(os.path.join(os.path.dirname(__file__), 'data', 'tokens', f'{TOKEN.replace("/", "-")}_2020-2025.csv'))
 
-# Cargar predicciones externas (^GSPC_all_models_predictions.csv)
-csv_ext = os.path.join(os.path.dirname(__file__), '^GSPC_all_models_predictions.csv')
+# Cargar predicciones externas (TOKEN_all_models_predictions.csv)
+csv_ext = os.path.join(os.path.dirname(__file__), 'Parker_predictions', f'{TOKEN.replace("/", "-")}_all_models_predictions.csv')
 ext_preds_map = {}
 idx_start_ext = None
 if os.path.exists(csv_ext):
