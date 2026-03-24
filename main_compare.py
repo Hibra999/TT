@@ -159,30 +159,37 @@ if not os.path.exists(csv_ext):
         f'  Archivos en carpeta: {disponibles}'
     )
 
-print(f'[1.5/11] Alineando predicciones externas...')
+print(f'[1.5/11] Alineando predicciones externas (por fecha)...')
 df_ext = pd.read_csv(csv_ext, parse_dates=['Date'])
 # [DEBUG] Verificar carga
 print(f'  [Parker DEBUG] Primeras filas:\n{df_ext.head(3)}')
 print(f'  [Parker DEBUG] dtypes:\n{df_ext.dtypes}')
 print(f'  [Parker DEBUG] Columna Date es datetime: {pd.api.types.is_datetime64_any_dtype(df_ext["Date"])}')
-# Coincidencia por 'Actual' (High)
-for i in range(len(df) - len(df_ext) + 1):
-    if np.allclose(df['High'].iloc[i:i+len(df_ext)].values, df_ext['Actual'].values, atol=1e-2):
-        idx_start_ext = i
-        for col in ['LSTM', 'GRU', 'ARIMA', 'RF', 'Transformer', 'XGBoost']:
-            key = col.upper().replace(' ', '_') + '_EXT'
-            full_raw = np.full(len(df), np.nan)
-            full_raw[idx_start_ext:idx_start_ext+len(df_ext)] = df_ext[col].values
-            ext_preds_map[key] = full_raw
-        break
+
+# Alinear por FECHA (los valores de Parker son normalizados, no en USD)
+df_date_to_idx = {pd.to_datetime(d).date(): i for i, d in enumerate(df['Date_final'])}
+for col in ['LSTM', 'GRU', 'ARIMA', 'RF', 'Transformer', 'XGBoost']:
+    key = col.upper().replace(' ', '_') + '_EXT'
+    full_raw = np.full(len(df), np.nan)
+    for _, row in df_ext.iterrows():
+        date_key = row['Date'].date()
+        if date_key in df_date_to_idx:
+            full_raw[df_date_to_idx[date_key]] = row[col]
+    ext_preds_map[key] = full_raw
 
 # [DEBUG] Verificar alineación
-if idx_start_ext is not None:
-    print(f'  [Parker DEBUG] Alineado en idx={idx_start_ext}, filas merge={len(df_ext)}')
-    print(f'  [Parker DEBUG] Muestra XGBOOST_EXT (5 vals): {ext_preds_map["XGBOOST_EXT"][idx_start_ext:idx_start_ext+5]}')
+aligned_count = int((~np.isnan(ext_preds_map.get('XGBOOST_EXT', np.array([np.nan])))).sum())
+print(f'  [Parker DEBUG] Filas alineadas por fecha: {aligned_count}/{len(df_ext)}')
+if aligned_count == 0:
+    print(f'  [Parker DEBUG] ADVERTENCIA: ninguna fecha del CSV coincide con df.')
+    print(f'  [Parker DEBUG] Muestra fechas CSV: {df_ext["Date"].dt.date.tolist()[:5]}')
+    print(f'  [Parker DEBUG] Muestra fechas df:  {[str(d) for d in list(df_date_to_idx.keys())[:5]]}')
 else:
-    print(f'  [Parker DEBUG] NO se encontró alineación. Rango Actual CSV: [{df_ext["Actual"].min():.4f}, {df_ext["Actual"].max():.4f}]')
-    print(f'  [Parker DEBUG] Rango High df: [{df["High"].min():.4f}, {df["High"].max():.4f}]')
+    # Determinar idx_start_ext = primer índice con dato válido en df
+    idx_start_ext = int(np.where(~np.isnan(ext_preds_map['XGBOOST_EXT']))[0][0])
+    print(f'  [Parker DEBUG] idx_start_ext={idx_start_ext}')
+    print(f'  [Parker DEBUG] Muestra XGBOOST_EXT (5 vals): {ext_preds_map["XGBOOST_EXT"][idx_start_ext:idx_start_ext+5]}')
+
 
 # Features
 print(f'[2/11] Construyendo Features (TA + Macro)...')
