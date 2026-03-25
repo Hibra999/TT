@@ -95,7 +95,7 @@ MDL = {
 }
 
 # ===== CONFIG =====
-TOKEN = '^GSPC'
+TOKEN = 'KO'
 # TOKEN = 'BTC/USDT'
 N_LGB, N_CB = 10, 10
 N_TX, N_MO = 10, 10
