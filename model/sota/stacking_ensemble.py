@@ -1,65 +1,14 @@
 """
-SOTA Stacking Ensemble: CatBoost + LightGBM + XGBoost + BaseLSTM → Meta LSTM
-Implementación basada en el paper de referencia con ponderación dinámica convexa.
+SOTA Stacking Ensemble: CatBoost + LightGBM + BaseLSTM → Meta LSTM
+Implementación basada en Yu et al. [44] 2025 con ponderación dinámica convexa.
+Modelos base: LightGBM, CatBoost, BaseLSTM (3 modelos).
 """
-import numpy as np; import pandas as pd; import torch; import torch.nn as nn; import torch.nn.functional as F; import optuna; import xgboost as xgb
+import numpy as np; import pandas as pd; import torch; import torch.nn as nn; import torch.nn.functional as F; import optuna
 from torch.utils.data import Dataset, DataLoader; from sklearn.metrics import mean_absolute_error; from numba import njit
 @njit(cache=True)
 def _fast_valid_indices(oof_matrix, y_true, window_size):
     return [t for t in range(window_size - 1, len(y_true)) if not np.isnan(oof_matrix[t - window_size + 1:t + 1]).any() and not np.isnan(y_true[t])]
 
-# ═══════════════════════════════════════════════════════════════════
-#  XGBoost Base Learner
-# ═══════════════════════════════════════════════════════════════════
-
-def objective_xgboost_global(trial, X, y, splitter, oof_storage=None):
-    param = {
-        "booster": trial.suggest_categorical("booster", ["gbtree", "dart"]),
-        "max_depth": trial.suggest_int("max_depth", 3, 12),
-        "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
-        "n_estimators": trial.suggest_int("n_estimators", 100, 1000),
-        "min_child_weight": trial.suggest_int("min_child_weight", 1, 20),
-        "subsample": trial.suggest_float("subsample", 0.5, 1.0),
-        "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 1.0),
-        "reg_alpha": trial.suggest_float("reg_alpha", 1e-8, 10.0, log=True),
-        "reg_lambda": trial.suggest_float("reg_lambda", 1e-8, 10.0, log=True),
-        "gamma": trial.suggest_float("gamma", 1e-8, 5.0, log=True),
-        "random_state": 42,
-        "tree_method": "hist",
-        "n_jobs": 1,
-        "verbosity": 0,
-    }
-
-    fold_scores, fold_preds, fold_indices = [], [], []
-
-    for t_idx, v_idx in splitter.split(y):
-        X_train, y_train = X.iloc[t_idx], y.iloc[t_idx]
-        X_val, y_val = X.iloc[v_idx], y.iloc[v_idx]
-        model = xgb.XGBRegressor(**param)
-        model.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
-        y_pred = model.predict(X_val)
-        fold_scores.append(mean_absolute_error(y_val, y_pred))
-        fold_preds.append(y_pred)
-        fold_indices.append(v_idx)
-
-    mean_score = float(np.mean(fold_scores))
-
-    if oof_storage is not None:
-        if 'best_score' not in oof_storage or mean_score < oof_storage['best_score']:
-            oof_storage['best_score'] = mean_score
-            oof_storage['params'] = param.copy()
-            oof_storage['preds'] = fold_preds
-            oof_storage['indices'] = fold_indices
-
-    return mean_score
-
-
-def train_final_xgb(X_train, y_train, X_test, best_params):
-    """Entrena XGBoost final con todo el train y predice en test."""
-    model = xgb.XGBRegressor(**best_params)
-    model.fit(X_train, y_train, verbose=False)
-    predictions = model.predict(X_test)
-    return predictions, model
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -342,10 +291,11 @@ def train_final_base_lstm(X_train, y_train, X_test, best_params, device):
 class StackingMetaLSTM(nn.Module):
     """
     Meta-Learner LSTM de 2 capas con ponderación dinámica convexa.
-    Produce pesos α_t, β_t, γ_t, δ_t via softmax (suman 1, ≥0).
-    ŷ_stacked = α_t·ŷ_Cat + β_t·ŷ_LGB + γ_t·ŷ_XGB + δ_t·ŷ_LSTM_base
+    Produce pesos α_t, β_t, γ_t via softmax (suman 1, ≥0).
+    ŷ_stacked = α_t·ŷ_Cat + β_t·ŷ_LGB + γ_t·ŷ_LSTM_base
+    Yu et al. [44] 2025: 3 modelos base (LightGBM, CatBoost, BaseLSTM).
     """
-    def __init__(self, num_models=4, hidden_size=64, dropout=0.1, temperature=1.0):
+    def __init__(self, num_models=3, hidden_size=64, dropout=0.1, temperature=1.0):
         super().__init__()
         self.num_models = num_models
         self.temperature = max(0.1, temperature)
@@ -403,24 +353,21 @@ class StackingMetaDataset(Dataset):
         return torch.from_numpy(X_t), torch.tensor(self.y_true[t])
 
 
-def build_oof_dataframe_sota(oof_lgb, oof_cb, oof_xgb, oof_lstm, y):
-    """Construye DataFrame OOF alineando predicciones de los 4 modelos SOTA."""
+def build_oof_dataframe_sota(oof_lgb, oof_cb, oof_lstm, y):
+    """Construye DataFrame OOF alineando predicciones de los 3 modelos SOTA (Yu et al. [44] 2025)."""
     from preprocessing.oof_generators import collect_oof_predictions
 
     preds_lgb, idx_lgb, _ = collect_oof_predictions(oof_lgb)
     preds_cb, idx_cb, _ = collect_oof_predictions(oof_cb)
-    preds_xgb, idx_xgb, _ = collect_oof_predictions(oof_xgb)
     preds_lstm, idx_lstm, _ = collect_oof_predictions(oof_lstm)
 
     df_lgb = pd.DataFrame({'idx': idx_lgb, 'lgb': preds_lgb})
     df_cb = pd.DataFrame({'idx': idx_cb, 'catboost': preds_cb})
-    df_xgb = pd.DataFrame({'idx': idx_xgb, 'xgboost': preds_xgb})
     df_lstm = pd.DataFrame({'idx': idx_lstm, 'base_lstm': preds_lstm})
 
     y_array = y.values if isinstance(y, pd.Series) else np.array(y)
 
     merged = df_lgb.merge(df_cb, on='idx', how='inner')
-    merged = merged.merge(df_xgb, on='idx', how='inner')
     merged = merged.merge(df_lstm, on='idx', how='inner')
     merged['target'] = merged['idx'].apply(
         lambda i: y_array[int(i)] if int(i) < len(y_array) else np.nan

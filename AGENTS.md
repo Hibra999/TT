@@ -2,11 +2,11 @@
 
 ## Project Overview
 
-This is a **machine learning project for financial time series forecasting** using ensemble methods. The project implements multiple base models (LightGBM, CatBoost, TimeXer, Moirai-MoE, XGBoost, LSTM) combined through meta-learning approaches (LSTM-based stacking) to predict asset price movements.
+This is a **machine learning project for financial time series forecasting** using ensemble methods. The project implements multiple base models (LightGBM, CatBoost, TimeXer, Moirai-MoE, LSTM) combined through meta-learning approaches (LSTM-based stacking) to predict asset price movements.
 
 ### Key Features
 
-- **Multi-model ensemble**: Combines gradient boosting (LightGBM, CatBoost, XGBoost) with deep learning models (TimeXer, Moirai-MoE, LSTM)
+- **Multi-model ensemble**: Combines gradient boosting (LightGBM, CatBoost) with deep learning models (TimeXer, Moirai-MoE, LSTM)
 - **Meta-learning stacking**: LSTM-based meta-learner that dynamically weights base model predictions
 - **Feature engineering**: Technical indicators (TA-Lib) + macroeconomic features
 - **Feature selection**: MIC (Maximal Information Coefficient) based feature selection
@@ -127,7 +127,7 @@ START, END = '2020-01-01', '2025-12-31'  # Date range
 
 ## Dependencies
 
-**Core ML**: scikit-learn, lightgbm, catboost, xgboost, torch, keras  
+**Core ML**: scikit-learn, lightgbm, catboost, torch, keras  
 **Time Series**: sktime, skforecast, statsmodels, hmmlearn  
 **Deep Learning**: transformers (TimeXer, Moirai)  
 **Optimization**: optuna  

@@ -14,7 +14,6 @@ from scipy.stats import t as t_dist; from bs4 import BeautifulSoup
 
 # Modelos SOTA
 from model.sota.stacking_ensemble import (
-    objective_xgboost_global, train_final_xgb,
     objective_base_lstm_global, train_final_base_lstm,
     build_oof_dataframe_sota, optimize_stacking_meta
 )
@@ -81,7 +80,6 @@ MDL = {
     'CB':  ('#2ca02c', 'CatBoost (Base Compartido)'),
     'TX':  ('#9467bd', 'TimeXer (Base Actual)'),
     'MO':  ('#ff7f0e', 'Moirai-MoE (Base Actual)'),
-    'XG':  ('#8c564b', 'XGBoost (Base SOTA)'),
     'BL':  ('#e377c2', 'Base LSTM (Base SOTA)'),
     'MT':  ('#17becf', 'Ensamble Actual'),
     'AB':  ('#e377c2', 'Ours (Ensamble Actual Sin TimeXer)'),
@@ -97,10 +95,10 @@ MDL = {
 # ===== CONFIG =====
 TOKEN = 'KO'
 # TOKEN = 'BTC/USDT'
-N_LGB, N_CB = 100, 100
-N_TX, N_MO = 100, 100
-N_XG, N_BL = 100, 100 
-N_MT, N_AB, N_SM = 100 , 100, 100 
+N_LGB, N_CB = 10, 10
+N_TX, N_MO = 10, 10
+N_BL = 10 
+N_MT, N_AB, N_SM = 10 , 10, 10 
 
 from datetime import datetime
 train_start = '2015-01-01'
@@ -133,7 +131,6 @@ print(f'  LightGBM:     {"CUDA" if device.type == "cuda" else "CPU"} (via device
 print(f'  CatBoost:     {"CUDA" if device.type == "cuda" else "CPU"} (via task_type parameter)')
 print(f'  TimeXer:      {"CUDA" if device.type == "cuda" else "CPU"} (device={device})')
 print(f'  Moirai-MoE:   {"CUDA" if device.type == "cuda" else "CPU"} (device={device})')
-print(f'  XGBoost:      {"CUDA" if device.type == "cuda" else "CPU"} (via tree_method=gpu_hist)')
 print(f'  Base LSTM:    {"CUDA" if device.type == "cuda" else "CPU"} (device={device})')
 print(f'  Meta LSTM:    {"CUDA" if device.type == "cuda" else "CPU"} (device={device})')
 print('=' * 70)
@@ -337,13 +334,8 @@ sm.optimize(lambda t: objective_moirai_moe_global(t, Xt, yt, sp, device=device, 
 bp_m = sm.best_params
 
 # Modelos solo del SOTA
-oof_x, oof_b = {}, {}
+oof_b = {}
 print('  --- Base Models Ensamble SOTA ---')
-print('  > XGBoost...')
-sx = optuna.create_study(direction='minimize')
-sx.optimize(lambda t: objective_xgboost_global(t, Xt, yt, sp, oof_storage=oof_x), n_trials=N_XG, n_jobs=1)
-bp_x = oof_x.get('params', sx.best_params)
-
 print('  > Base LSTM...')
 sb = optuna.create_study(direction='minimize')
 sb.optimize(lambda t: objective_base_lstm_global(t, Xt, yt, sp, device=device, oof_storage=oof_b), n_trials=N_BL, n_jobs=1)
@@ -373,7 +365,7 @@ ws_meta_ablation = bp_ab.get('window_size', 10) if meta_model_ablation is not No
 
 # Meta Ensamble SOTA
 print(f'[8/11] Entrenando Stacking Meta LSTM (Modelo Yu et al.)...')
-oof_df_sota = build_oof_dataframe_sota(oof_l, oof_c, oof_x, oof_b, yt)
+oof_df_sota = build_oof_dataframe_sota(oof_l, oof_c, oof_b, yt)
 print(f'  OOF matrix shape: {oof_df_sota.shape}')
 meta_model_sota, _, _, bp_sm, _ = optimize_stacking_meta(oof_df_sota, device, n_trials=N_SM)
 ws_meta_sota = bp_sm.get('window_size', 10) if meta_model_sota is not None else 10
@@ -410,13 +402,12 @@ pm_full, _ = moirai_predict_test(
 )
 pm = pm_full[-len(ye):]  # Recortar: solo la porción de test real
 
-# XGBoost y Base LSTM (no secuenciales o manejan su propio contexto)
-px, _ = train_final_xgb(Xt, yt, Xe, bp_x)
+# Base LSTM (maneja su propio contexto secuencial)
 pb, _ = train_final_base_lstm(Xt, yt, Xe, bp_b, device)
 
 # Verificar que TODOS los base models cubren el test completo
 for name, arr in [('LGB', pl), ('CB', pc), ('TX', pt), ('MO', pm),
-                  ('XG', px), ('BL', pb)]:
+                  ('BL', pb)]:
     n_valid = (~np.isnan(arr)).sum()
     print(f'  [{name}] {n_valid}/{len(ye)} predicciones válidas')
 
@@ -450,7 +441,7 @@ if meta_model_ablation is not None:
     print(f'  [AB] {(~np.isnan(pmt_ablation)).sum()}/{len(ye)} válidas')
 
 if meta_model_sota is not None:
-    test_matrix_sota = np.column_stack([pl, pc, px, pb]).astype(np.float32)
+    test_matrix_sota = np.column_stack([pl, pc, pb]).astype(np.float32)
     meta_model_sota.eval()
     with torch.no_grad():
         for i in range(ws_meta_sota - 1, len(ye)):
@@ -462,7 +453,7 @@ if meta_model_sota is not None:
 
 # Solo truncar las primeras ws-1 posiciones de base models (warm-up del meta)
 start_idx = max(ws_meta_actual, ws_meta_ablation, ws_meta_sota) - 1
-for arr in [pl, pc, pt, pm, px, pb]:
+for arr in [pl, pc, pt, pm, pb]:
     arr[:start_idx] = np.nan
 
 
@@ -505,7 +496,6 @@ preds_p = {
     'CB':  safe_inv_recon(pc),
     'TX':  safe_inv_recon(pt),
     'MO':  safe_inv_recon(pm),
-    'XG':  safe_inv_recon(px),
     'BL':  safe_inv_recon(pb),
     'MT':  safe_inv_recon(pmt_actual),
     'AB':  safe_inv_recon(pmt_ablation),
@@ -568,7 +558,7 @@ meta_raw_preds['Ensamble Actual'] = meta_raw_preds['MT']  # Alias para acceso po
 if 'Ensamble Actual' not in meta_raw_preds:
     raise KeyError('meta_raw_preds["Ensamble Actual"] no encontrado. El meta modelo actual no fue entrenado correctamente.')
 # Predicciones raw de modelos base para gráficos LogReturn_MinMax
-base_raw_preds = {'LGB': pl, 'CB': pc, 'TX': pt, 'MO': pm, 'XG': px, 'BL': pb}
+base_raw_preds = {'LGB': pl, 'CB': pc, 'TX': pt, 'MO': pm, 'BL': pb}
 
 # Convertir predicciones externas (USD) a LogReturn_MinMax para gráficos LR
 for ext_key in ['LSTM_EXT', 'GRU_EXT', 'ARIMA_EXT', 'RF_EXT', 'TRANS_EXT']:
@@ -729,7 +719,6 @@ def generate_compare_report(token, cp, gi_v, pr_r, preds_p, mp, MDL, zs, ze, out
             ('SM',  'Yu et al. [44] 2025', True),
             ('LGB', 'LightGBM', False),
             ('CB',  'CatBoost', False),
-            ('XG',  'XGBoost', False),
             ('BL',  'Base LSTM', False),
         ]),
         ('Parker et al. 2025', [
@@ -841,7 +830,7 @@ def generate_compare_report(token, cp, gi_v, pr_r, preds_p, mp, MDL, zs, ze, out
                     }
         # Agregar predicciones base (raw LogReturn_MinMax) para cada modelo
         if base_raw_preds is not None:
-            for km in ['LGB', 'CB', 'TX', 'MO', 'XG', 'BL', 'LSTM_EXT', 'GRU_EXT', 'ARIMA_EXT', 'RF_EXT', 'TRANS_EXT']:
+            for km in ['LGB', 'CB', 'TX', 'MO', 'BL', 'LSTM_EXT', 'GRU_EXT', 'ARIMA_EXT', 'RF_EXT', 'TRANS_EXT']:
                 p_raw = base_raw_preds.get(km)
                 if p_raw is not None:
                     m_valid = ~np.isnan(p_raw)
@@ -895,7 +884,7 @@ function drawChart(divId, titleTxt, keys, metaKey) {
 
 drawChart('zoom-chart-actual', 'Precio Close vs Actual', ['LGB','CB','TX','MO','MT'], 'MT');
 drawChart('zoom-chart-ablation', 'Precio Close vs Ours', ['LGB','CB','MO','AB'], 'AB');
-drawChart('zoom-chart-sota', 'Precio Close vs Yu et al. 2025', ['LGB','CB','XG','BL','SM'], 'SM');
+drawChart('zoom-chart-sota', 'Precio Close vs Yu et al. 2025', ['LGB','CB','BL','SM'], 'SM');
 drawChart('zoom-chart-parker', 'Precio Close vs Parker et al. 2025', ['LSTM_EXT','GRU_EXT','ARIMA_EXT','RF_EXT','TRANS_EXT','XGB_META_EXT'], 'XGB_META_EXT');
 
 function drawLR(divId, titleTxt, metaKey, baseKeys) {
@@ -921,7 +910,7 @@ function drawLR(divId, titleTxt, metaKey, baseKeys) {
 
 drawLR('lr-actual', 'LogReturn_MinMax: Ensamble Actual', 'MT', ['LGB','CB','TX','MO']);
 drawLR('lr-ablation', 'LogReturn_MinMax: Ours (Sin TimeXer)', 'AB', ['LGB','CB','MO']);
-drawLR('lr-sota', 'LogReturn_MinMax: Yu et al. 2025', 'SM', ['LGB','CB','XG','BL']);
+drawLR('lr-sota', 'LogReturn_MinMax: Yu et al. 2025', 'SM', ['LGB','CB','BL']);
 drawLR('lr-parker', 'LogReturn_MinMax: Parker et al. 2025', 'XGB_META_EXT', ['LSTM_EXT','GRU_EXT','ARIMA_EXT','RF_EXT','TRANS_EXT']);
 
 // --- Gráficas de Métricas con DA y resaltado ---
