@@ -96,6 +96,7 @@ MDL = {
     'LS':  ('#ff9896', 'Lasso (Ensamble Actual)'),
     'EN':  ('#c5b0d5', 'Elastic Net (Ensamble Actual)'),
     'AB':  ('#e377c2', 'Ours (Ensamble Actual Sin TimeXer)'),
+    'NC':  ('#e7298a', 'Ours (Sin CatBoost)'),
     'SM':  ('#d62728', 'Yu et al. [44] 2025'),
     'LSTM_EXT': ('#ff1493', 'LSTM (Externo)'),
     'GRU_EXT': ('#00ced1', 'GRU (Externo)'),
@@ -116,7 +117,7 @@ TOKEN = '^GSPC'
 N_LGB, N_CB = 10, 10
 N_TX, N_MO = 10, 10
 N_BL = 10 
-N_MT, N_AB, N_SM = 10 , 10, 10
+N_MT, N_AB, N_NC, N_SM = 10 , 10, 10, 10
 N_LGB_META  = 10   # trials Optuna para LightGBM meta
 N_RF_META   = 10   # trials Optuna para Random Forest meta
 N_MLP_META  = 10   # trials Optuna para MLP meta
@@ -386,6 +387,14 @@ print(f'  OOF matrix shape: {oof_df_ablation.shape}')
 meta_model_ablation, _, _, bp_ab, _ = optimize_lstm_meta(oof_df_ablation, device, n_trials=N_AB)
 ws_meta_ablation = bp_ab.get('window_size', 10) if meta_model_ablation is not None else 10
 
+# Meta Ensamble Ablation (Sin CatBoost)
+print(f'[7.5/11] Entrenando Meta LSTM Ours (Sin CatBoost)...')
+oof_df_no_cb = oof_df_actual.drop(columns=['catboost'])
+print(f'  OOF matrix shape: {oof_df_no_cb.shape}')
+print(f'  OOF columns: {oof_df_no_cb.columns.tolist()}')
+meta_model_no_cb, _, _, bp_nc, _ = optimize_lstm_meta(oof_df_no_cb, device, n_trials=N_NC)
+ws_meta_no_cb = bp_nc.get('window_size', 10) if meta_model_no_cb is not None else 10
+
 # Meta Ensamble SOTA
 print(f'[8/11] Entrenando Stacking Meta LSTM (Modelo Yu et al.)...')
 oof_df_sota = build_oof_dataframe_sota(oof_l, oof_c, oof_b, yt)
@@ -439,6 +448,7 @@ for name, arr in [('LGB', pl), ('CB', pc), ('TX', pt), ('MO', pm),
 print(f'[10/11] Predicciones Ensambles (Meta-Learners)...')
 pmt_actual = np.full(len(ye), np.nan)
 pmt_ablation = np.full(len(ye), np.nan)
+pmt_no_cb = np.full(len(ye), np.nan)
 pmt_sota = np.full(len(ye), np.nan)
 
 if meta_model_actual is not None:
@@ -462,6 +472,17 @@ if meta_model_ablation is not None:
                 x_t = torch.from_numpy(window).unsqueeze(0).to(device)
                 pmt_ablation[i] = meta_model_ablation(x_t).cpu().item()
     print(f'  [AB] {(~np.isnan(pmt_ablation)).sum()}/{len(ye)} válidas')
+
+if meta_model_no_cb is not None:
+    test_matrix_no_cb = np.column_stack([pl, pt, pm]).astype(np.float32)
+    meta_model_no_cb.eval()
+    with torch.no_grad():
+        for i in range(ws_meta_no_cb - 1, len(ye)):
+            window = test_matrix_no_cb[i - ws_meta_no_cb + 1:i + 1]
+            if not np.isnan(window).any():
+                x_t = torch.from_numpy(window).unsqueeze(0).to(device)
+                pmt_no_cb[i] = meta_model_no_cb(x_t).cpu().item()
+    print(f'  [NC] {(~np.isnan(pmt_no_cb)).sum()}/{len(ye)} válidas')
 
 if meta_model_sota is not None:
     test_matrix_sota = np.column_stack([pl, pc, pb]).astype(np.float32)
@@ -941,7 +962,7 @@ except Exception as e:
 
 
 # Solo truncar las primeras ws-1 posiciones de base models (warm-up del meta)
-start_idx = max(ws_meta_actual, ws_meta_ablation, ws_meta_sota) - 1
+start_idx = max(ws_meta_actual, ws_meta_ablation, ws_meta_no_cb, ws_meta_sota) - 1
 for arr in [pl, pc, pt, pm, pb]:
     arr[:start_idx] = np.nan
 
@@ -998,6 +1019,7 @@ preds_p = {
     'GRU_META':   safe_inv_recon(pmt_gru_meta),
     'TRANS_META': safe_inv_recon(pmt_trans_meta),
     'AB':  safe_inv_recon(pmt_ablation),
+    'NC':  safe_inv_recon(pmt_no_cb),
     'SM':  safe_inv_recon(pmt_sota),
     # Predicciones externas (Parker): los valores están en escala LogReturn_MinMax [0,1]
     # igual que nuestros modelos, hay que aplicar safe_inv_recon para obtener USD.
@@ -1055,7 +1077,7 @@ meta_raw_preds = {'MT': pmt_actual, 'SA': pmt_simple_avg, 'WA': pmt_weighted_avg
                   'LGB_META': pmt_lgb_meta, 'RF_META': pmt_rf_meta,
                   'MLP_META': pmt_mlp_meta, 'GRU_META': pmt_gru_meta,
                   'TRANS_META': pmt_trans_meta,
-                  'AB': pmt_ablation, 'SM': pmt_sota, 'XGB_META_EXT': pmt_parker}
+                  'AB': pmt_ablation, 'NC': pmt_no_cb, 'SM': pmt_sota, 'XGB_META_EXT': pmt_parker}
 meta_raw_preds['Ensamble Actual'] = meta_raw_preds['MT']  # Alias para acceso por nombre
 
 # Verificar existencia de meta_raw_preds['Ensamble Actual']
@@ -1112,12 +1134,13 @@ def generate_compare_report(token, cp, gi_v, pr_r, preds_p, mp, MDL, zs, ze, out
         for km, (cl, nm) in MDL.items():
             if nm == r['Modelo']:
                 r['Color'] = cl
-                if km in ['MT', 'AB', 'SM', 'XGB_META_EXT']:
+                if km in ['MT', 'NC', 'AB', 'SM', 'XGB_META_EXT']:
                     mp_metas.append(r)
                 break
     # Forzar orden explícito de filas
     orden = [
         'Ensamble Actual',
+        'Ours (Sin CatBoost)',
         'Ours (Ensamble Actual Sin TimeXer)',
         'Yu et al. [44] 2025',
         'Parker et al. 2025'
@@ -1164,6 +1187,10 @@ def generate_compare_report(token, cp, gi_v, pr_r, preds_p, mp, MDL, zs, ze, out
       <div id="zoom-chart-actual"></div>
     </div>
     <div class="card">
+      <h2>Ours (Sin CatBoost)</h2>
+      <div id="zoom-chart-no-cb"></div>
+    </div>
+    <div class="card">
       <h2>Ours (Sin TimeXer)</h2>
       <div id="zoom-chart-ablation"></div>
     </div>
@@ -1205,7 +1232,7 @@ def generate_compare_report(token, cp, gi_v, pr_r, preds_p, mp, MDL, zs, ze, out
 """
 
     # ===== PARTE 4: Comparación de Meta Modelos — Ensamble Actual =====
-    meta_compare_keys = ['MT', 'SA', 'WA', 'RD', 'LS', 'EN',
+    meta_compare_keys = ['MT', 'NC', 'SA', 'WA', 'RD', 'LS', 'EN',
                          'LGB_META', 'RF_META', 'MLP_META', 'GRU_META', 'TRANS_META']
     meta_compare_rows = []
     for km in meta_compare_keys:
@@ -1263,6 +1290,12 @@ def generate_compare_report(token, cp, gi_v, pr_r, preds_p, mp, MDL, zs, ze, out
             ('MT',  'Meta LSTM (Ensamble Actual)', True),
             ('LGB', 'LightGBM', False),
             ('CB',  'CatBoost', False),
+            ('TX',  'TimeXer', False),
+            ('MO',  'Moirai-MoE', False),
+        ]),
+        ('Ours (Sin CatBoost)', [
+            ('NC',  'Ours (Sin CatBoost)', True),
+            ('LGB', 'LightGBM', False),
             ('TX',  'TimeXer', False),
             ('MO',  'Moirai-MoE', False),
         ]),
@@ -1351,6 +1384,7 @@ def generate_compare_report(token, cp, gi_v, pr_r, preds_p, mp, MDL, zs, ze, out
     html += """  <div class="card"><h2>Prediccion sobre LogReturn_MinMax (Variable Objetivo)</h2>
     <div class="charts-grid">
       <div id="lr-actual"></div>
+      <div id="lr-no-cb"></div>
       <div id="lr-ablation"></div>
       <div id="lr-sota"></div>
       <div id="lr-parker"></div>
@@ -1372,7 +1406,7 @@ def generate_compare_report(token, cp, gi_v, pr_r, preds_p, mp, MDL, zs, ze, out
     if ye_vals is not None and meta_raw_preds is not None:
         lr_real = [float(v) for v in ye_vals]
         lr_idx = list(range(len(ye_vals)))
-        for km in ['MT', 'AB', 'SM', 'XGB_META_EXT']:
+        for km in ['MT', 'NC', 'AB', 'SM', 'XGB_META_EXT']:
             p_raw = meta_raw_preds.get(km)
             if p_raw is not None:
                 m_valid = ~np.isnan(p_raw)
@@ -1440,6 +1474,7 @@ function drawChart(divId, titleTxt, keys, metaKey) {
 }
 
 drawChart('zoom-chart-actual', 'Precio Close vs Actual', ['LGB','CB','TX','MO','MT'], 'MT');
+drawChart('zoom-chart-no-cb', 'Precio Close vs Ours (Sin CatBoost)', ['LGB','TX','MO','NC'], 'NC');
 drawChart('zoom-chart-ablation', 'Precio Close vs Ours', ['LGB','CB','MO','AB'], 'AB');
 drawChart('zoom-chart-sota', 'Precio Close vs Yu et al. 2025', ['LGB','CB','BL','SM'], 'SM');
 drawChart('zoom-chart-parker', 'Precio Close vs Parker et al. 2025', ['LSTM_EXT','GRU_EXT','ARIMA_EXT','RF_EXT','TRANS_EXT','XGB_META_EXT'], 'XGB_META_EXT');
@@ -1466,13 +1501,14 @@ function drawLR(divId, titleTxt, metaKey, baseKeys) {
 }
 
 drawLR('lr-actual', 'LogReturn_MinMax: Ensamble Actual', 'MT', ['LGB','CB','TX','MO']);
+drawLR('lr-no-cb', 'LogReturn_MinMax: Ours (Sin CatBoost)', 'NC', ['LGB','TX','MO']);
 drawLR('lr-ablation', 'LogReturn_MinMax: Ours (Sin TimeXer)', 'AB', ['LGB','CB','MO']);
 drawLR('lr-sota', 'LogReturn_MinMax: Yu et al. 2025', 'SM', ['LGB','CB','BL']);
 drawLR('lr-parker', 'LogReturn_MinMax: Parker et al. 2025', 'XGB_META_EXT', ['LSTM_EXT','GRU_EXT','ARIMA_EXT','RF_EXT','TRANS_EXT']);
 
 // --- Gráficas de Métricas con DA y resaltado ---
 // Orden fijo de modelos para las barras
-const metaOrder = ['Ensamble Actual', 'Ours (Ensamble Actual Sin TimeXer)', 'Yu et al. [44] 2025', 'Parker et al. 2025'];
+const metaOrder = ['Ensamble Actual', 'Ours (Sin CatBoost)', 'Ours (Ensamble Actual Sin TimeXer)', 'Yu et al. [44] 2025', 'Parker et al. 2025'];
 const orderedMetrics = metaOrder.map(name => metricsData.find(m => m.Modelo === name)).filter(m => m);
 
 function drawMetricBar(divId, mn, titleTxt, bestFn, fmtFn) {
@@ -1507,6 +1543,8 @@ drawMetricBar('chart-da', 'DA', 'DA (%)', maxFn, fmtDA);
         logging.warning("[WARN] Fila 'Ensamble Actual' no fue insertada en la tabla de métricas")
     if 'DA (%)' not in html:
         logging.warning("[WARN] Columna DA (%) no fue insertada en la tabla")
+    if 'Ours (Sin CatBoost)' not in html:
+        logging.warning("[WARN] Fila 'Ours (Sin CatBoost)' no fue insertada en la tabla de métricas")
 
     safe_token = token.replace('/', '-').replace('^', '').replace('=', '-')
     out_html = os.path.join(out_dir, f'report_compare_{safe_token}.html')
@@ -1669,19 +1707,19 @@ def dm_test(d: np.ndarray) -> tuple[float, float]:
     p_value = 2 * (1 - t_dist.cdf(abs(dm_stat), df=T-1))
     return dm_stat, p_value
 
-logging.info("[DM] Iniciando pruebas Diebold-Mariano sobre 14 meta modelos (91 pares)...")
+logging.info("[DM] Iniciando pruebas Diebold-Mariano sobre 15 meta modelos (105 pares)...")
 
 # Validar que MT existe en preds_p
 if 'MT' not in preds_p:
     raise KeyError('Modelo "Meta LSTM (Ensamble Actual)" (key=MT) no encontrado en preds_p')
 
 # 5A: target_metas ampliado con nuevos keys
-target_metas = ['MT', 'AB', 'SM', 'XGB_META_EXT',
+target_metas = ['MT', 'NC', 'AB', 'SM', 'XGB_META_EXT',
                 'SA', 'WA', 'RD', 'LS', 'EN',
                 'LGB_META', 'RF_META', 'MLP_META',
                 'GRU_META', 'TRANS_META']
 
-# Generar todos los pares únicos C(14,2) = 91
+# Generar todos los pares únicos C(15,2) = 105
 dm_all_pairs = list(combinations(target_metas, 2))
 
 dm_results = []
@@ -1706,9 +1744,9 @@ for (ki, kj) in dm_all_pairs:
             })
 
 # 5B: Organizar en bloques
-actual_keys = {'MT', 'SA', 'WA', 'RD', 'LS', 'EN',
+actual_keys = {'MT', 'NC', 'SA', 'WA', 'RD', 'LS', 'EN',
                'LGB_META', 'RF_META', 'MLP_META', 'GRU_META', 'TRANS_META'}
-bloque1 = []  # Ensamble Actual vs Ensamble Actual
+bloque1 = []  # Ensamble Actual vs Ensamble Actual (incluye NC)
 bloque2 = []  # Ensamble Actual vs AB
 bloque3 = []  # Ensamble Actual vs SM
 bloque4 = []  # Ensamble Actual vs XGB_META_EXT (Parker)
@@ -1755,7 +1793,7 @@ if os.path.exists(html_path):
         dm_html = """
         <div class="card">
             <h2>Prueba de Diebold-Mariano (Escala USD: Errores Cuadráticos)</h2>
-            <p style="color:#666; font-size:0.9rem; margin-bottom:12px;">H0: Los modelos tienen la misma precisión predictiva. p-valor &lt; 0.05 indica diferencia significativa. C(14,2) = 91 pares.</p>
+            <p style="color:#666; font-size:0.9rem; margin-bottom:12px;">H0: Los modelos tienen la misma precisión predictiva. p-valor &lt; 0.05 indica diferencia significativa. C(15,2) = 105 pares.</p>
             <table class="metrics-table">
                 <thead><tr>
                     <th>Modelo A</th><th>Modelo B</th>
@@ -1792,5 +1830,5 @@ if os.path.exists(html_path):
 
     with open(html_path, 'w', encoding='utf-8') as f:
         f.write(str(soup))
-    print(f"[DM] {len(dm_results)} pares DM (de 91 posibles) inyectados exitosamente en {html_path}")
+    print(f"[DM] {len(dm_results)} pares DM (de 105 posibles) inyectados exitosamente en {html_path}")
 
