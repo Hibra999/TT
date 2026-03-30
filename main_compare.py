@@ -7,6 +7,11 @@ from model.bases_models.catboost_model import objective_catboost_global, train_f
 from model.bases_models.timexer_model import objective_timexer_global, train_final_and_predict_test as tx_predict_test
 from model.bases_models.moraiMOE_model import objective_moirai_moe_global, preload_moirai_module, train_final_and_predict_test as moirai_predict_test
 from model.meta_model.lstm_model import optimize_lstm_meta, get_average_weights
+from model.meta_model.simple_avg import train_and_predict as sa_predict
+from model.meta_model.weighted_avg import train_and_predict as wa_predict
+from model.meta_model.ridge_model import train_and_predict as rd_predict
+from model.meta_model.lasso_model import train_and_predict as ls_predict
+from model.meta_model.elasticnet_model import train_and_predict as en_predict
 from preprocessing.oof_generators import build_oof_dataframe, collect_oof_predictions
 from statsmodels.tsa.stattools import adfuller; from statsmodels.stats.diagnostic import acorr_ljungbox
 from statsmodels.regression.linear_model import OLS; from statsmodels.stats.sandwich_covariance import cov_hac
@@ -20,7 +25,6 @@ from model.sota.stacking_ensemble import (
 
 from preprocessing.walk_forward import wfrw; from features.tecnical_indicators import TA; from features.top_n import top_k
 from sklearn.preprocessing import MinMaxScaler; import torch
-from sklearn.linear_model import Ridge, Lasso, ElasticNet
 from sklearn.metrics import mean_squared_error
 from sklearn.model_selection import KFold, cross_val_score
 from sklearn.ensemble import RandomForestRegressor
@@ -495,134 +499,24 @@ if meta_model_sota is not None:
                 pmt_sota[i] = meta_model_sota(x_t).cpu().item()
     print(f'  [SM] {(~np.isnan(pmt_sota)).sum()}/{len(ye)} válidas')
 
-# --- PARTE 1A: Simple Average ---
-print('  > Simple Average (Ensamble Actual)...')
-pmt_simple_avg = np.full(len(ye), np.nan)
-try:
-    mask_sa = (~np.isnan(pl)) & (~np.isnan(pc)) & (~np.isnan(pt)) & (~np.isnan(pm))
-    pmt_simple_avg[mask_sa] = np.mean(
-        np.column_stack([pl[mask_sa], pc[mask_sa], pt[mask_sa], pm[mask_sa]]), axis=1
-    )
-    print(f'  [SA] {(~np.isnan(pmt_simple_avg)).sum()}/{len(ye)} válidas')
-except Exception as e:
-    logging.warning(f'[SA] Simple Average falló: {e}')
-    pmt_simple_avg = np.full(len(ye), np.nan)
-
-# --- PARTE 1B: Weighted Average (Optuna) ---
-print('  > Weighted Average (Ensamble Actual)...')
-pmt_weighted_avg = np.full(len(ye), np.nan)
-try:
-    def objective_weighted_avg(trial, oof_df):
-        w = np.array([
-            trial.suggest_float('w_lgb', 0.0, 1.0),
-            trial.suggest_float('w_cb',  0.0, 1.0),
-            trial.suggest_float('w_tx',  0.0, 1.0),
-            trial.suggest_float('w_mo',  0.0, 1.0),
-        ])
-        w = w / w.sum()
-        cols = ['lgb', 'catboost', 'timexer', 'moirai']
-        pred = (oof_df[cols].values * w).sum(axis=1)
-        return mean_squared_error(oof_df['target'].values, pred)
-
-    study_wa = optuna.create_study(direction='minimize')
-    study_wa.optimize(lambda t: objective_weighted_avg(t, oof_df_actual), n_trials=N_MT, n_jobs=1)
-    best_w = np.array([
-        study_wa.best_params['w_lgb'],
-        study_wa.best_params['w_cb'],
-        study_wa.best_params['w_tx'],
-        study_wa.best_params['w_mo'],
-    ])
-    best_w = best_w / best_w.sum()
-    print(f'  [WA] Pesos óptimos: LGB={best_w[0]:.4f}, CB={best_w[1]:.4f}, TX={best_w[2]:.4f}, MO={best_w[3]:.4f}')
-    mask_wa = (~np.isnan(pl)) & (~np.isnan(pc)) & (~np.isnan(pt)) & (~np.isnan(pm))
-    X_test_wa = np.column_stack([pl[mask_wa], pc[mask_wa], pt[mask_wa], pm[mask_wa]])
-    pmt_weighted_avg[mask_wa] = (X_test_wa * best_w).sum(axis=1)
-    print(f'  [WA] {(~np.isnan(pmt_weighted_avg)).sum()}/{len(ye)} válidas')
-except Exception as e:
-    logging.warning(f'[WA] Weighted Average falló: {e}')
-    pmt_weighted_avg = np.full(len(ye), np.nan)
-
-# --- PARTE 2: Meta modelos lineales (Ridge, Lasso, Elastic Net) ---
+# --- META MODELOS: SA, WA, Ridge, Lasso, Elastic Net ---
+print('  > Meta modelos lineales y promedio (Ensamble Actual)...')
 oof_cols = ['lgb', 'catboost', 'timexer', 'moirai']
-X_oof = oof_df_actual[oof_cols].values
-y_oof = oof_df_actual['target'].values
-X_test_linear = np.column_stack([pl, pc, pt, pm])
+assert set(oof_cols).issubset(oof_df_actual.columns), \
+    f"[ERROR] oof_df_actual no tiene las columnas esperadas: {oof_cols}"
+X_test_bases = np.column_stack([pl, pc, pt, pm])
 
-# Ridge
-print('  > Ridge (Ensamble Actual)...')
-pmt_ridge = np.full(len(ye), np.nan)
-try:
-    def objective_ridge(trial):
-        alpha = trial.suggest_float('alpha', 1e-4, 100.0, log=True)
-        kf = KFold(n_splits=5, shuffle=False)
-        scores = []
-        for tr_idx, va_idx in kf.split(X_oof):
-            m = Ridge(alpha=alpha)
-            m.fit(X_oof[tr_idx], y_oof[tr_idx])
-            scores.append(mean_squared_error(y_oof[va_idx], m.predict(X_oof[va_idx])))
-        return np.mean(scores)
+pmt_simple_avg, _       = sa_predict(oof_df_actual, X_test_bases, n_trials=N_MT, device=device)
+pmt_weighted_avg, info_wa = wa_predict(oof_df_actual, X_test_bases, n_trials=N_MT, device=device)
+pmt_ridge, info_rd        = rd_predict(oof_df_actual, X_test_bases, n_trials=N_MT, device=device)
+pmt_lasso, info_ls        = ls_predict(oof_df_actual, X_test_bases, n_trials=N_MT, device=device)
+pmt_elasticnet, info_en   = en_predict(oof_df_actual, X_test_bases, n_trials=N_MT, device=device)
 
-    study_rd = optuna.create_study(direction='minimize')
-    study_rd.optimize(objective_ridge, n_trials=N_MT, n_jobs=1)
-    best_ridge = Ridge(alpha=study_rd.best_params['alpha'])
-    best_ridge.fit(X_oof, y_oof)
-    mask_rd = ~np.any(np.isnan(X_test_linear), axis=1)
-    pmt_ridge[mask_rd] = best_ridge.predict(X_test_linear[mask_rd])
-    print(f'  [RD] alpha={study_rd.best_params["alpha"]:.6f}, {(~np.isnan(pmt_ridge)).sum()}/{len(ye)} válidas')
-except Exception as e:
-    logging.warning(f'[RD] Ridge falló: {e}')
-    pmt_ridge = np.full(len(ye), np.nan)
-
-# Lasso
-print('  > Lasso (Ensamble Actual)...')
-pmt_lasso = np.full(len(ye), np.nan)
-try:
-    def objective_lasso(trial):
-        alpha = trial.suggest_float('alpha', 1e-4, 100.0, log=True)
-        kf = KFold(n_splits=5, shuffle=False)
-        scores = []
-        for tr_idx, va_idx in kf.split(X_oof):
-            m = Lasso(alpha=alpha, max_iter=10000)
-            m.fit(X_oof[tr_idx], y_oof[tr_idx])
-            scores.append(mean_squared_error(y_oof[va_idx], m.predict(X_oof[va_idx])))
-        return np.mean(scores)
-
-    study_ls = optuna.create_study(direction='minimize')
-    study_ls.optimize(objective_lasso, n_trials=N_MT, n_jobs=1)
-    best_lasso = Lasso(alpha=study_ls.best_params['alpha'], max_iter=10000)
-    best_lasso.fit(X_oof, y_oof)
-    mask_ls = ~np.any(np.isnan(X_test_linear), axis=1)
-    pmt_lasso[mask_ls] = best_lasso.predict(X_test_linear[mask_ls])
-    print(f'  [LS] alpha={study_ls.best_params["alpha"]:.6f}, {(~np.isnan(pmt_lasso)).sum()}/{len(ye)} válidas')
-except Exception as e:
-    logging.warning(f'[LS] Lasso falló: {e}')
-    pmt_lasso = np.full(len(ye), np.nan)
-
-# Elastic Net
-print('  > Elastic Net (Ensamble Actual)...')
-pmt_elasticnet = np.full(len(ye), np.nan)
-try:
-    def objective_elasticnet(trial):
-        alpha = trial.suggest_float('alpha', 1e-4, 100.0, log=True)
-        l1_ratio = trial.suggest_float('l1_ratio', 0.0, 1.0)
-        kf = KFold(n_splits=5, shuffle=False)
-        scores = []
-        for tr_idx, va_idx in kf.split(X_oof):
-            m = ElasticNet(alpha=alpha, l1_ratio=l1_ratio, max_iter=10000)
-            m.fit(X_oof[tr_idx], y_oof[tr_idx])
-            scores.append(mean_squared_error(y_oof[va_idx], m.predict(X_oof[va_idx])))
-        return np.mean(scores)
-
-    study_en = optuna.create_study(direction='minimize')
-    study_en.optimize(objective_elasticnet, n_trials=N_MT, n_jobs=1)
-    best_en = ElasticNet(alpha=study_en.best_params['alpha'], l1_ratio=study_en.best_params['l1_ratio'], max_iter=10000)
-    best_en.fit(X_oof, y_oof)
-    mask_en = ~np.any(np.isnan(X_test_linear), axis=1)
-    pmt_elasticnet[mask_en] = best_en.predict(X_test_linear[mask_en])
-    print(f'  [EN] alpha={study_en.best_params["alpha"]:.6f}, l1_ratio={study_en.best_params["l1_ratio"]:.4f}, {(~np.isnan(pmt_elasticnet)).sum()}/{len(ye)} válidas')
-except Exception as e:
-    logging.warning(f'[EN] Elastic Net falló: {e}')
-    pmt_elasticnet = np.full(len(ye), np.nan)
+print(f'  [WA] Pesos: {info_wa.get("weights", {})}')
+print(f'  [RD] alpha={info_rd.get("alpha", "N/A")}')
+print(f'  [LS] alpha={info_ls.get("alpha", "N/A")}')
+print(f'  [EN] alpha={info_en.get("alpha", "N/A")}, '
+      f'l1_ratio={info_en.get("l1_ratio", "N/A")}')
 
 # --- PARTE NEW-1A: LightGBM Meta ---
 print('  > LightGBM Meta (Ensamble Actual)...')
