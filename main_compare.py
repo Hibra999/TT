@@ -12,6 +12,9 @@ from model.meta_model.weighted_avg import train_and_predict as wa_predict
 from model.meta_model.ridge_model import train_and_predict as rd_predict
 from model.meta_model.lasso_model import train_and_predict as ls_predict
 from model.meta_model.elasticnet_model import train_and_predict as en_predict
+from model.meta_model.mlp_model import train_and_predict as mlp_predict
+from model.meta_model.gru_model import train_and_predict as gru_predict
+from model.meta_model.transformer_model import train_and_predict as trans_predict
 from preprocessing.oof_generators import build_oof_dataframe, collect_oof_predictions
 from statsmodels.tsa.stattools import adfuller; from statsmodels.stats.diagnostic import acorr_ljungbox
 from statsmodels.regression.linear_model import OLS; from statsmodels.stats.sandwich_covariance import cov_hac
@@ -26,12 +29,9 @@ from model.sota.stacking_ensemble import (
 from preprocessing.walk_forward import wfrw; from features.tecnical_indicators import TA; from features.top_n import top_k
 from sklearn.preprocessing import MinMaxScaler; import torch
 from sklearn.metrics import mean_squared_error
-from sklearn.model_selection import KFold, cross_val_score
+from sklearn.model_selection import cross_val_score
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.preprocessing import StandardScaler
 import lightgbm as lgb_pkg
-import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
 
 
 def build_oof_dataframe_ablation(oof_lgb, oof_cb, oof_moirai, y):
@@ -586,273 +586,32 @@ except Exception as e:
     logging.warning(f'[RF_META] Random Forest Meta falló: {e}')
     pmt_rf_meta = np.full(len(ye), np.nan)
 
-# --- PARTE NEW-2A: MLP Meta (PyTorch) ---
+# --- PARTE NEW-2A: MLP Meta ---
 print('  > MLP Meta (Ensamble Actual)...')
-pmt_mlp_meta = np.full(len(ye), np.nan)
-try:
-    class MLPMeta(nn.Module):
-        def __init__(self, input_size, hidden_size, n_layers, dropout):
-            super().__init__()
-            layers = []
-            in_dim = input_size
-            for _ in range(n_layers):
-                layers.append(nn.Linear(in_dim, hidden_size))
-                layers.append(nn.ReLU())
-                if dropout > 0: layers.append(nn.Dropout(dropout))
-                in_dim = hidden_size
-            layers.append(nn.Linear(hidden_size, 1))
-            self.net = nn.Sequential(*layers)
-        def forward(self, x):
-            return self.net(x).squeeze(-1)
+pmt_mlp_meta, info_mlp = mlp_predict(
+    oof_df_actual, X_test_bases, n_trials=N_MLP_META, device=device
+)
 
-    scaler_mlp = StandardScaler()
-    X_oof_mlp = scaler_mlp.fit_transform(X_oof)
-
-    def objective_mlp_meta(trial):
-        n_layers = trial.suggest_int('n_layers', 1, 4)
-        hidden_size = trial.suggest_int('hidden_size', 16, 256)
-        dropout = trial.suggest_float('dropout', 0.0, 0.5)
-        lr_ = trial.suggest_float('lr', 1e-4, 1e-2, log=True)
-        batch_size = trial.suggest_categorical('batch_size', [16, 32, 64])
-        epochs = trial.suggest_int('epochs', 20, 100)
-        # 5-fold CV
-        kf = KFold(n_splits=5, shuffle=False)
-        fold_scores = []
-        for tr_i, va_i in kf.split(X_oof_mlp):
-            model_ = MLPMeta(4, hidden_size, n_layers, dropout).to(device)
-            opt_ = torch.optim.Adam(model_.parameters(), lr=lr_)
-            crit_ = nn.MSELoss()
-            X_tr_t = torch.tensor(X_oof_mlp[tr_i], dtype=torch.float32).to(device)
-            y_tr_t = torch.tensor(y_oof[tr_i], dtype=torch.float32).to(device)
-            X_va_t = torch.tensor(X_oof_mlp[va_i], dtype=torch.float32).to(device)
-            y_va_t = torch.tensor(y_oof[va_i], dtype=torch.float32).to(device)
-            ds_tr = torch.utils.data.TensorDataset(X_tr_t, y_tr_t)
-            dl_tr = DataLoader(ds_tr, batch_size=batch_size, shuffle=True)
-            model_.train()
-            for _ in range(epochs):
-                for xb, yb in dl_tr:
-                    opt_.zero_grad(); loss = crit_(model_(xb), yb)
-                    loss.backward(); opt_.step()
-            model_.eval()
-            with torch.no_grad():
-                va_pred = model_(X_va_t).cpu().numpy()
-            fold_scores.append(mean_squared_error(y_oof[va_i], va_pred))
-        return np.mean(fold_scores)
-
-    study_mlp = optuna.create_study(direction='minimize')
-    study_mlp.optimize(objective_mlp_meta, n_trials=N_MLP_META, n_jobs=1)
-    bp_mlp = study_mlp.best_params
-    # Train final
-    final_mlp = MLPMeta(4, bp_mlp['hidden_size'], bp_mlp['n_layers'], bp_mlp['dropout']).to(device)
-    opt_mlp = torch.optim.Adam(final_mlp.parameters(), lr=bp_mlp['lr'])
-    crit_mlp = nn.MSELoss()
-    X_oof_t = torch.tensor(X_oof_mlp, dtype=torch.float32).to(device)
-    y_oof_t = torch.tensor(y_oof, dtype=torch.float32).to(device)
-    ds_full = torch.utils.data.TensorDataset(X_oof_t, y_oof_t)
-    dl_full = DataLoader(ds_full, batch_size=bp_mlp['batch_size'], shuffle=True)
-    final_mlp.train()
-    for _ in range(bp_mlp['epochs']):
-        for xb, yb in dl_full:
-            opt_mlp.zero_grad(); loss = crit_mlp(final_mlp(xb), yb)
-            loss.backward(); opt_mlp.step()
-    final_mlp.eval()
-    mask_mlp = ~np.any(np.isnan(X_test_linear), axis=1)
-    X_test_mlp = scaler_mlp.transform(X_test_linear[mask_mlp])
-    with torch.no_grad():
-        pmt_mlp_meta[mask_mlp] = final_mlp(
-            torch.tensor(X_test_mlp, dtype=torch.float32).to(device)
-        ).cpu().numpy()
-    print(f'  [MLP_META] {(~np.isnan(pmt_mlp_meta)).sum()}/{len(ye)} válidas')
-except Exception as e:
-    logging.warning(f'[MLP_META] MLP Meta falló: {e}')
-    pmt_mlp_meta = np.full(len(ye), np.nan)
-
-# --- PARTE NEW-2B: GRU Meta (PyTorch) ---
+# --- PARTE NEW-2B: GRU Meta ---
 print('  > GRU Meta (Ensamble Actual)...')
-pmt_gru_meta = np.full(len(ye), np.nan)
-try:
-    class GRUMeta(nn.Module):
-        def __init__(self, input_size, hidden_size, num_layers, dropout):
-            super().__init__()
-            self.gru = nn.GRU(input_size=input_size, hidden_size=hidden_size,
-                              num_layers=num_layers, batch_first=True,
-                              dropout=dropout if num_layers > 1 else 0.0)
-            self.fc = nn.Linear(hidden_size, 1)
-        def forward(self, x):
-            out, _ = self.gru(x)
-            return self.fc(out[:, -1, :]).squeeze(-1)
+pmt_gru_meta, info_gru = gru_predict(
+    oof_df_actual, X_test_bases, n_trials=N_GRU_META, device=device
+)
 
-    scaler_gru = StandardScaler()
-    X_oof_gru = scaler_gru.fit_transform(X_oof)
-
-    def _build_windows(X, y, ws):
-        Xw, yw = [], []
-        for i in range(ws - 1, len(y)):
-            Xw.append(X[i - ws + 1:i + 1])
-            yw.append(y[i])
-        return np.array(Xw, dtype=np.float32), np.array(yw, dtype=np.float32)
-
-    def objective_gru_meta(trial):
-        hidden_size = trial.suggest_int('hidden_size', 16, 128)
-        num_layers = trial.suggest_int('num_layers', 1, 3)
-        dropout = trial.suggest_float('dropout', 0.0, 0.5)
-        lr_ = trial.suggest_float('lr', 1e-4, 1e-2, log=True)
-        batch_size = trial.suggest_categorical('batch_size', [16, 32, 64])
-        epochs = trial.suggest_int('epochs', 20, 100)
-        window_size = trial.suggest_int('window_size', 3, 20)
-        # 5-fold CV on windows
-        Xw, yw = _build_windows(X_oof_gru, y_oof, window_size)
-        if len(Xw) < 20: return float('inf')
-        kf = KFold(n_splits=5, shuffle=False)
-        fold_scores = []
-        for tr_i, va_i in kf.split(Xw):
-            model_ = GRUMeta(4, hidden_size, num_layers, dropout).to(device)
-            opt_ = torch.optim.Adam(model_.parameters(), lr=lr_)
-            crit_ = nn.MSELoss()
-            ds_tr = torch.utils.data.TensorDataset(
-                torch.tensor(Xw[tr_i]).to(device), torch.tensor(yw[tr_i]).to(device))
-            dl_tr = DataLoader(ds_tr, batch_size=batch_size, shuffle=True)
-            model_.train()
-            for _ in range(epochs):
-                for xb, yb in dl_tr:
-                    opt_.zero_grad(); loss = crit_(model_(xb), yb)
-                    loss.backward(); opt_.step()
-            model_.eval()
-            with torch.no_grad():
-                va_pred = model_(torch.tensor(Xw[va_i]).to(device)).cpu().numpy()
-            fold_scores.append(mean_squared_error(yw[va_i], va_pred))
-        return np.mean(fold_scores)
-
-    study_gru = optuna.create_study(direction='minimize')
-    study_gru.optimize(objective_gru_meta, n_trials=N_GRU_META, n_jobs=1)
-    bp_gru = study_gru.best_params
-    ws_gru = bp_gru['window_size']
-    # Train final
-    Xw_full, yw_full = _build_windows(X_oof_gru, y_oof, ws_gru)
-    final_gru = GRUMeta(4, bp_gru['hidden_size'], bp_gru['num_layers'], bp_gru['dropout']).to(device)
-    opt_gru = torch.optim.Adam(final_gru.parameters(), lr=bp_gru['lr'])
-    crit_gru = nn.MSELoss()
-    ds_gru_full = torch.utils.data.TensorDataset(
-        torch.tensor(Xw_full).to(device), torch.tensor(yw_full).to(device))
-    dl_gru_full = DataLoader(ds_gru_full, batch_size=bp_gru['batch_size'], shuffle=True)
-    final_gru.train()
-    for _ in range(bp_gru['epochs']):
-        for xb, yb in dl_gru_full:
-            opt_gru.zero_grad(); loss = crit_gru(final_gru(xb), yb)
-            loss.backward(); opt_gru.step()
-    final_gru.eval()
-    # Predict on test set using sliding window
-    X_test_gru_scaled = scaler_gru.transform(X_test_linear)
-    with torch.no_grad():
-        for i in range(ws_gru - 1, len(ye)):
-            window = X_test_gru_scaled[i - ws_gru + 1:i + 1]
-            if not np.isnan(window).any():
-                x_t = torch.tensor(window, dtype=torch.float32).unsqueeze(0).to(device)
-                pmt_gru_meta[i] = final_gru(x_t).cpu().item()
-    print(f'  [GRU_META] ws={ws_gru}, {(~np.isnan(pmt_gru_meta)).sum()}/{len(ye)} válidas')
-except Exception as e:
-    logging.warning(f'[GRU_META] GRU Meta falló: {e}')
-    pmt_gru_meta = np.full(len(ye), np.nan)
-
-# --- PARTE NEW-2C: Transformer Meta (PyTorch) ---
+# --- PARTE NEW-2C: Transformer Meta ---
 print('  > Transformer Meta (Ensamble Actual)...')
-pmt_trans_meta = np.full(len(ye), np.nan)
-try:
-    class PositionalEncoding(nn.Module):
-        def __init__(self, d_model, max_len=500):
-            super().__init__()
-            pe = torch.zeros(max_len, d_model)
-            position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
-            div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-np.log(10000.0) / d_model))
-            pe[:, 0::2] = torch.sin(position * div_term)
-            if d_model > 1:
-                pe[:, 1::2] = torch.cos(position * div_term[:d_model // 2])
-            self.register_buffer('pe', pe.unsqueeze(0))
-        def forward(self, x):
-            return x + self.pe[:, :x.size(1), :]
+pmt_trans_meta, info_trans = trans_predict(
+    oof_df_actual, X_test_bases, n_trials=N_TRANS_META, device=device
+)
 
-    class TransformerMeta(nn.Module):
-        def __init__(self, input_size, d_model, nhead, num_layers, dropout):
-            super().__init__()
-            self.input_proj = nn.Linear(input_size, d_model)
-            self.pos_enc = PositionalEncoding(d_model)
-            encoder_layer = nn.TransformerEncoderLayer(
-                d_model=d_model, nhead=nhead, dim_feedforward=d_model * 4,
-                dropout=dropout, batch_first=True)
-            self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
-            self.fc = nn.Linear(d_model, 1)
-        def forward(self, x):
-            x = self.input_proj(x)
-            x = self.pos_enc(x)
-            x = self.transformer(x)
-            return self.fc(x[:, -1, :]).squeeze(-1)
-
-    scaler_trans = StandardScaler()
-    X_oof_trans = scaler_trans.fit_transform(X_oof)
-
-    def objective_trans_meta(trial):
-        d_model = trial.suggest_categorical('d_model', [16, 32, 64])
-        nhead = trial.suggest_categorical('nhead', [1, 2, 4])
-        if d_model % nhead != 0: return float('inf')
-        num_layers = trial.suggest_int('num_layers', 1, 3)
-        dropout = trial.suggest_float('dropout', 0.0, 0.4)
-        lr_ = trial.suggest_float('lr', 1e-4, 1e-2, log=True)
-        batch_size = trial.suggest_categorical('batch_size', [16, 32, 64])
-        epochs = trial.suggest_int('epochs', 20, 100)
-        window_size = trial.suggest_int('window_size', 3, 20)
-        Xw, yw = _build_windows(X_oof_trans, y_oof, window_size)
-        if len(Xw) < 20: return float('inf')
-        kf = KFold(n_splits=5, shuffle=False)
-        fold_scores = []
-        for tr_i, va_i in kf.split(Xw):
-            model_ = TransformerMeta(4, d_model, nhead, num_layers, dropout).to(device)
-            opt_ = torch.optim.Adam(model_.parameters(), lr=lr_)
-            crit_ = nn.MSELoss()
-            ds_tr = torch.utils.data.TensorDataset(
-                torch.tensor(Xw[tr_i]).to(device), torch.tensor(yw[tr_i]).to(device))
-            dl_tr = DataLoader(ds_tr, batch_size=batch_size, shuffle=True)
-            model_.train()
-            for _ in range(epochs):
-                for xb, yb in dl_tr:
-                    opt_.zero_grad(); loss = crit_(model_(xb), yb)
-                    loss.backward(); opt_.step()
-            model_.eval()
-            with torch.no_grad():
-                va_pred = model_(torch.tensor(Xw[va_i]).to(device)).cpu().numpy()
-            fold_scores.append(mean_squared_error(yw[va_i], va_pred))
-        return np.mean(fold_scores)
-
-    study_trans = optuna.create_study(direction='minimize')
-    study_trans.optimize(objective_trans_meta, n_trials=N_TRANS_META, n_jobs=1)
-    bp_trans = study_trans.best_params
-    ws_trans = bp_trans['window_size']
-    # Train final
-    Xw_full_t, yw_full_t = _build_windows(X_oof_trans, y_oof, ws_trans)
-    final_trans = TransformerMeta(4, bp_trans['d_model'], bp_trans['nhead'],
-                                  bp_trans['num_layers'], bp_trans['dropout']).to(device)
-    opt_trans = torch.optim.Adam(final_trans.parameters(), lr=bp_trans['lr'])
-    crit_trans = nn.MSELoss()
-    ds_trans_full = torch.utils.data.TensorDataset(
-        torch.tensor(Xw_full_t).to(device), torch.tensor(yw_full_t).to(device))
-    dl_trans_full = DataLoader(ds_trans_full, batch_size=bp_trans['batch_size'], shuffle=True)
-    final_trans.train()
-    for _ in range(bp_trans['epochs']):
-        for xb, yb in dl_trans_full:
-            opt_trans.zero_grad(); loss = crit_trans(final_trans(xb), yb)
-            loss.backward(); opt_trans.step()
-    final_trans.eval()
-    # Predict on test set using sliding window
-    X_test_trans_scaled = scaler_trans.transform(X_test_linear)
-    with torch.no_grad():
-        for i in range(ws_trans - 1, len(ye)):
-            window = X_test_trans_scaled[i - ws_trans + 1:i + 1]
-            if not np.isnan(window).any():
-                x_t = torch.tensor(window, dtype=torch.float32).unsqueeze(0).to(device)
-                pmt_trans_meta[i] = final_trans(x_t).cpu().item()
-    print(f'  [TRANS_META] ws={ws_trans}, d_model={bp_trans["d_model"]}, nhead={bp_trans["nhead"]}, {(~np.isnan(pmt_trans_meta)).sum()}/{len(ye)} válidas')
-except Exception as e:
-    logging.warning(f'[TRANS_META] Transformer Meta falló: {e}')
-    pmt_trans_meta = np.full(len(ye), np.nan)
+print(f'  [MLP]   window_size N/A, '
+      f'hidden={info_mlp.get("hidden_size","N/A")}, '
+      f'layers={info_mlp.get("n_layers","N/A")}')
+print(f'  [GRU]   window={info_gru.get("window_size","N/A")}, '
+      f'hidden={info_gru.get("hidden_size","N/A")}')
+print(f'  [TRANS] window={info_trans.get("window_size","N/A")}, '
+      f'd_model={info_trans.get("d_model","N/A")}, '
+      f'nhead={info_trans.get("nhead","N/A")}')
 
 
 # Solo truncar las primeras ws-1 posiciones de base models (warm-up del meta)

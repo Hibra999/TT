@@ -1,0 +1,149 @@
+import numpy as np
+import pandas as pd
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader
+import optuna
+import logging
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import mean_squared_error
+from sklearn.model_selection import KFold
+
+
+class GRUMeta(nn.Module):
+    def __init__(self, input_size, hidden_size, num_layers, dropout):
+        super().__init__()
+        self.gru = nn.GRU(input_size=input_size, hidden_size=hidden_size,
+                          num_layers=num_layers, batch_first=True,
+                          dropout=dropout if num_layers > 1 else 0.0)
+        self.fc = nn.Linear(hidden_size, 1)
+
+    def forward(self, x):
+        out, _ = self.gru(x)
+        return self.fc(out[:, -1, :]).squeeze(-1)
+
+
+def _build_windows(X, y, ws):
+    """Construye ventanas deslizantes para entrenamiento secuencial."""
+    Xw, yw = [], []
+    for i in range(ws - 1, len(y)):
+        Xw.append(X[i - ws + 1:i + 1])
+        yw.append(y[i])
+    return np.array(Xw, dtype=np.float32), np.array(yw, dtype=np.float32)
+
+
+def train_and_predict(
+    oof_df: pd.DataFrame,
+    X_test: np.ndarray,
+    n_trials: int = 10,
+    device: torch.device | None = None,
+    random_state: int = 42
+) -> tuple[np.ndarray, dict]:
+    """
+    GRU meta model. Optimiza hiperparámetros con Optuna + 5-fold CV
+    sobre OOF con ventana deslizante.
+
+    Parámetros
+    ----------
+    oof_df      : DataFrame con columnas OOF + 'target'
+    X_test      : matriz (n_test, n_bases) con predicciones base en test set
+    n_trials    : número de trials Optuna
+    device      : torch.device para entrenamiento
+    random_state: ignorado
+
+    Retorna
+    -------
+    predictions : np.ndarray shape (n_test,)
+    meta_info   : dict con hiperparámetros óptimos y oof_mse
+    """
+    try:
+        if device is None:
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+        feat_cols = [c for c in oof_df.columns if c not in ('idx', 'target')]
+        n_features = len(feat_cols)
+        X_oof = oof_df[feat_cols].values
+        y_oof = oof_df['target'].values
+        n_test = len(X_test)
+
+        scaler = StandardScaler()
+        X_oof_scaled = scaler.fit_transform(X_oof)
+
+        def objective(trial):
+            hidden_size = trial.suggest_int('hidden_size', 16, 128)
+            num_layers = trial.suggest_int('num_layers', 1, 3)
+            dropout = trial.suggest_float('dropout', 0.0, 0.5)
+            lr = trial.suggest_float('lr', 1e-4, 1e-2, log=True)
+            batch_size = trial.suggest_categorical('batch_size', [16, 32, 64])
+            epochs = trial.suggest_int('epochs', 20, 100)
+            window_size = trial.suggest_int('window_size', 3, 20)
+            # 5-fold CV on windows
+            Xw, yw = _build_windows(X_oof_scaled, y_oof, window_size)
+            if len(Xw) < 20:
+                return float('inf')
+            kf = KFold(n_splits=5, shuffle=False)
+            fold_scores = []
+            for tr_i, va_i in kf.split(Xw):
+                model_ = GRUMeta(n_features, hidden_size, num_layers, dropout).to(device)
+                opt_ = torch.optim.Adam(model_.parameters(), lr=lr)
+                crit_ = nn.MSELoss()
+                ds_tr = torch.utils.data.TensorDataset(
+                    torch.tensor(Xw[tr_i]).to(device), torch.tensor(yw[tr_i]).to(device))
+                dl_tr = DataLoader(ds_tr, batch_size=batch_size, shuffle=True)
+                model_.train()
+                for _ in range(epochs):
+                    for xb, yb in dl_tr:
+                        opt_.zero_grad()
+                        loss = crit_(model_(xb), yb)
+                        loss.backward()
+                        opt_.step()
+                model_.eval()
+                with torch.no_grad():
+                    va_pred = model_(torch.tensor(Xw[va_i]).to(device)).cpu().numpy()
+                fold_scores.append(mean_squared_error(yw[va_i], va_pred))
+            return np.mean(fold_scores)
+
+        study = optuna.create_study(direction='minimize')
+        study.optimize(objective, n_trials=n_trials, n_jobs=1)
+        bp = study.best_params
+        ws = bp['window_size']
+
+        # Train final model on all OOF
+        Xw_full, yw_full = _build_windows(X_oof_scaled, y_oof, ws)
+        final_model = GRUMeta(n_features, bp['hidden_size'], bp['num_layers'], bp['dropout']).to(device)
+        opt = torch.optim.Adam(final_model.parameters(), lr=bp['lr'])
+        crit = nn.MSELoss()
+        ds_full = torch.utils.data.TensorDataset(
+            torch.tensor(Xw_full).to(device), torch.tensor(yw_full).to(device))
+        dl_full = DataLoader(ds_full, batch_size=bp['batch_size'], shuffle=True)
+        final_model.train()
+        for _ in range(bp['epochs']):
+            for xb, yb in dl_full:
+                opt.zero_grad()
+                loss = crit(final_model(xb), yb)
+                loss.backward()
+                opt.step()
+        final_model.eval()
+
+        # Predict on test set using sliding window
+        predictions = np.full(n_test, np.nan)
+        X_test_scaled = scaler.transform(X_test)
+        with torch.no_grad():
+            for i in range(ws - 1, n_test):
+                window = X_test_scaled[i - ws + 1:i + 1]
+                if not np.isnan(window).any():
+                    x_t = torch.tensor(window, dtype=torch.float32).unsqueeze(0).to(device)
+                    predictions[i] = final_model(x_t).cpu().item()
+
+        n_valid = int((~np.isnan(predictions)).sum())
+        print(f'  [GRU_META] ws={ws}, {n_valid}/{n_test} válidas')
+
+        meta_info = {
+            'hidden_size': bp['hidden_size'], 'num_layers': bp['num_layers'],
+            'window_size': ws, 'dropout': bp['dropout'], 'lr': bp['lr'],
+            'epochs': bp['epochs'], 'oof_mse': study.best_value
+        }
+        return predictions, meta_info
+    except Exception as e:
+        logging.warning(f'[GRU_META] GRU Meta falló: {e}')
+        return np.full(len(X_test), np.nan), {}
