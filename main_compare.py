@@ -22,7 +22,12 @@ from preprocessing.walk_forward import wfrw; from features.tecnical_indicators i
 from sklearn.preprocessing import MinMaxScaler; import torch
 from sklearn.linear_model import Ridge, Lasso, ElasticNet
 from sklearn.metrics import mean_squared_error
-from sklearn.model_selection import KFold
+from sklearn.model_selection import KFold, cross_val_score
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.preprocessing import StandardScaler
+import lightgbm as lgb_pkg
+import torch.nn as nn
+from torch.utils.data import Dataset, DataLoader
 
 
 def build_oof_dataframe_ablation(oof_lgb, oof_cb, oof_moirai, y):
@@ -97,7 +102,12 @@ MDL = {
     'ARIMA_EXT': ('#ffd700', 'ARIMA (Externo)'),
     'RF_EXT': ('#32cd32', 'Random Forest (Externo)'),
     'TRANS_EXT': ('#8a2be2', 'Transformer (Externo)'),
-    'XGB_META_EXT': ('#ff4500', 'Parker et al. 2025')
+    'XGB_META_EXT': ('#ff4500', 'Parker et al. 2025'),
+    'LGB_META':   ('#1a9850', 'LightGBM Meta (Ensamble Actual)'),
+    'RF_META':    ('#74add1', 'Random Forest (Ensamble Actual)'),
+    'MLP_META':   ('#f46d43', 'MLP (Ensamble Actual)'),
+    'GRU_META':   ('#542788', 'GRU (Ensamble Actual)'),
+    'TRANS_META': ('#bf812d', 'Transformer (Ensamble Actual)'),
 }
 
 # ===== CONFIG =====
@@ -107,6 +117,11 @@ N_LGB, N_CB = 10, 10
 N_TX, N_MO = 10, 10
 N_BL = 10 
 N_MT, N_AB, N_SM = 10 , 10, 10
+N_LGB_META  = 10   # trials Optuna para LightGBM meta
+N_RF_META   = 10   # trials Optuna para Random Forest meta
+N_MLP_META  = 10   # trials Optuna para MLP meta
+N_GRU_META  = 10   # trials Optuna para GRU meta
+N_TRANS_META = 10  # trials Optuna para Transformer meta
 
 from datetime import datetime
 train_start = '2015-01-01'
@@ -588,6 +603,343 @@ except Exception as e:
     logging.warning(f'[EN] Elastic Net falló: {e}')
     pmt_elasticnet = np.full(len(ye), np.nan)
 
+# --- PARTE NEW-1A: LightGBM Meta ---
+print('  > LightGBM Meta (Ensamble Actual)...')
+pmt_lgb_meta = np.full(len(ye), np.nan)
+try:
+    def objective_lgb_meta(trial, X_oof_, y_oof_):
+        params = {
+            'n_estimators':     trial.suggest_int('n_estimators', 50, 500),
+            'learning_rate':    trial.suggest_float('lr', 1e-3, 0.3, log=True),
+            'num_leaves':       trial.suggest_int('num_leaves', 15, 127),
+            'max_depth':        trial.suggest_int('max_depth', 3, 10),
+            'subsample':        trial.suggest_float('subsample', 0.5, 1.0),
+            'colsample_bytree': trial.suggest_float('colsample_bytree', 0.5, 1.0),
+            'reg_alpha':        trial.suggest_float('reg_alpha', 1e-4, 10.0, log=True),
+            'reg_lambda':       trial.suggest_float('reg_lambda', 1e-4, 10.0, log=True),
+            'verbosity': -1, 'random_state': 42
+        }
+        model_ = lgb_pkg.LGBMRegressor(**params)
+        scores = cross_val_score(model_, X_oof_, y_oof_, cv=5,
+                                 scoring='neg_mean_squared_error')
+        return -scores.mean()
+
+    study_lgb_m = optuna.create_study(direction='minimize')
+    study_lgb_m.optimize(lambda t: objective_lgb_meta(t, X_oof, y_oof), n_trials=N_LGB_META, n_jobs=1)
+    bp_lgb_m = study_lgb_m.best_params
+    bp_lgb_m['verbosity'] = -1; bp_lgb_m['random_state'] = 42
+    # Rename 'lr' key to 'learning_rate' for LGBMRegressor
+    if 'lr' in bp_lgb_m:
+        bp_lgb_m['learning_rate'] = bp_lgb_m.pop('lr')
+    best_lgb_meta = lgb_pkg.LGBMRegressor(**bp_lgb_m)
+    best_lgb_meta.fit(X_oof, y_oof)
+    mask_lgb_m = ~np.any(np.isnan(X_test_linear), axis=1)
+    pmt_lgb_meta[mask_lgb_m] = best_lgb_meta.predict(X_test_linear[mask_lgb_m])
+    print(f'  [LGB_META] {(~np.isnan(pmt_lgb_meta)).sum()}/{len(ye)} válidas')
+except Exception as e:
+    logging.warning(f'[LGB_META] LightGBM Meta falló: {e}')
+    pmt_lgb_meta = np.full(len(ye), np.nan)
+
+# --- PARTE NEW-1B: Random Forest Meta ---
+print('  > Random Forest Meta (Ensamble Actual)...')
+pmt_rf_meta = np.full(len(ye), np.nan)
+try:
+    def objective_rf_meta(trial, X_oof_, y_oof_):
+        params = {
+            'n_estimators':      trial.suggest_int('n_estimators', 50, 500),
+            'max_depth':         trial.suggest_int('max_depth', 3, 20),
+            'min_samples_split': trial.suggest_int('min_samples_split', 2, 20),
+            'min_samples_leaf':  trial.suggest_int('min_samples_leaf', 1, 10),
+            'max_features':      trial.suggest_categorical('max_features', ['sqrt', 'log2', None]),
+            'random_state': 42, 'n_jobs': -1
+        }
+        model_ = RandomForestRegressor(**params)
+        scores = cross_val_score(model_, X_oof_, y_oof_, cv=5,
+                                 scoring='neg_mean_squared_error')
+        return -scores.mean()
+
+    study_rf_m = optuna.create_study(direction='minimize')
+    study_rf_m.optimize(lambda t: objective_rf_meta(t, X_oof, y_oof), n_trials=N_RF_META, n_jobs=1)
+    bp_rf_m = study_rf_m.best_params
+    bp_rf_m['random_state'] = 42; bp_rf_m['n_jobs'] = -1
+    best_rf_meta = RandomForestRegressor(**bp_rf_m)
+    best_rf_meta.fit(X_oof, y_oof)
+    mask_rf_m = ~np.any(np.isnan(X_test_linear), axis=1)
+    pmt_rf_meta[mask_rf_m] = best_rf_meta.predict(X_test_linear[mask_rf_m])
+    print(f'  [RF_META] {(~np.isnan(pmt_rf_meta)).sum()}/{len(ye)} válidas')
+except Exception as e:
+    logging.warning(f'[RF_META] Random Forest Meta falló: {e}')
+    pmt_rf_meta = np.full(len(ye), np.nan)
+
+# --- PARTE NEW-2A: MLP Meta (PyTorch) ---
+print('  > MLP Meta (Ensamble Actual)...')
+pmt_mlp_meta = np.full(len(ye), np.nan)
+try:
+    class MLPMeta(nn.Module):
+        def __init__(self, input_size, hidden_size, n_layers, dropout):
+            super().__init__()
+            layers = []
+            in_dim = input_size
+            for _ in range(n_layers):
+                layers.append(nn.Linear(in_dim, hidden_size))
+                layers.append(nn.ReLU())
+                if dropout > 0: layers.append(nn.Dropout(dropout))
+                in_dim = hidden_size
+            layers.append(nn.Linear(hidden_size, 1))
+            self.net = nn.Sequential(*layers)
+        def forward(self, x):
+            return self.net(x).squeeze(-1)
+
+    scaler_mlp = StandardScaler()
+    X_oof_mlp = scaler_mlp.fit_transform(X_oof)
+
+    def objective_mlp_meta(trial):
+        n_layers = trial.suggest_int('n_layers', 1, 4)
+        hidden_size = trial.suggest_int('hidden_size', 16, 256)
+        dropout = trial.suggest_float('dropout', 0.0, 0.5)
+        lr_ = trial.suggest_float('lr', 1e-4, 1e-2, log=True)
+        batch_size = trial.suggest_categorical('batch_size', [16, 32, 64])
+        epochs = trial.suggest_int('epochs', 20, 100)
+        # 5-fold CV
+        kf = KFold(n_splits=5, shuffle=False)
+        fold_scores = []
+        for tr_i, va_i in kf.split(X_oof_mlp):
+            model_ = MLPMeta(4, hidden_size, n_layers, dropout).to(device)
+            opt_ = torch.optim.Adam(model_.parameters(), lr=lr_)
+            crit_ = nn.MSELoss()
+            X_tr_t = torch.tensor(X_oof_mlp[tr_i], dtype=torch.float32).to(device)
+            y_tr_t = torch.tensor(y_oof[tr_i], dtype=torch.float32).to(device)
+            X_va_t = torch.tensor(X_oof_mlp[va_i], dtype=torch.float32).to(device)
+            y_va_t = torch.tensor(y_oof[va_i], dtype=torch.float32).to(device)
+            ds_tr = torch.utils.data.TensorDataset(X_tr_t, y_tr_t)
+            dl_tr = DataLoader(ds_tr, batch_size=batch_size, shuffle=True)
+            model_.train()
+            for _ in range(epochs):
+                for xb, yb in dl_tr:
+                    opt_.zero_grad(); loss = crit_(model_(xb), yb)
+                    loss.backward(); opt_.step()
+            model_.eval()
+            with torch.no_grad():
+                va_pred = model_(X_va_t).cpu().numpy()
+            fold_scores.append(mean_squared_error(y_oof[va_i], va_pred))
+        return np.mean(fold_scores)
+
+    study_mlp = optuna.create_study(direction='minimize')
+    study_mlp.optimize(objective_mlp_meta, n_trials=N_MLP_META, n_jobs=1)
+    bp_mlp = study_mlp.best_params
+    # Train final
+    final_mlp = MLPMeta(4, bp_mlp['hidden_size'], bp_mlp['n_layers'], bp_mlp['dropout']).to(device)
+    opt_mlp = torch.optim.Adam(final_mlp.parameters(), lr=bp_mlp['lr'])
+    crit_mlp = nn.MSELoss()
+    X_oof_t = torch.tensor(X_oof_mlp, dtype=torch.float32).to(device)
+    y_oof_t = torch.tensor(y_oof, dtype=torch.float32).to(device)
+    ds_full = torch.utils.data.TensorDataset(X_oof_t, y_oof_t)
+    dl_full = DataLoader(ds_full, batch_size=bp_mlp['batch_size'], shuffle=True)
+    final_mlp.train()
+    for _ in range(bp_mlp['epochs']):
+        for xb, yb in dl_full:
+            opt_mlp.zero_grad(); loss = crit_mlp(final_mlp(xb), yb)
+            loss.backward(); opt_mlp.step()
+    final_mlp.eval()
+    mask_mlp = ~np.any(np.isnan(X_test_linear), axis=1)
+    X_test_mlp = scaler_mlp.transform(X_test_linear[mask_mlp])
+    with torch.no_grad():
+        pmt_mlp_meta[mask_mlp] = final_mlp(
+            torch.tensor(X_test_mlp, dtype=torch.float32).to(device)
+        ).cpu().numpy()
+    print(f'  [MLP_META] {(~np.isnan(pmt_mlp_meta)).sum()}/{len(ye)} válidas')
+except Exception as e:
+    logging.warning(f'[MLP_META] MLP Meta falló: {e}')
+    pmt_mlp_meta = np.full(len(ye), np.nan)
+
+# --- PARTE NEW-2B: GRU Meta (PyTorch) ---
+print('  > GRU Meta (Ensamble Actual)...')
+pmt_gru_meta = np.full(len(ye), np.nan)
+try:
+    class GRUMeta(nn.Module):
+        def __init__(self, input_size, hidden_size, num_layers, dropout):
+            super().__init__()
+            self.gru = nn.GRU(input_size=input_size, hidden_size=hidden_size,
+                              num_layers=num_layers, batch_first=True,
+                              dropout=dropout if num_layers > 1 else 0.0)
+            self.fc = nn.Linear(hidden_size, 1)
+        def forward(self, x):
+            out, _ = self.gru(x)
+            return self.fc(out[:, -1, :]).squeeze(-1)
+
+    scaler_gru = StandardScaler()
+    X_oof_gru = scaler_gru.fit_transform(X_oof)
+
+    def _build_windows(X, y, ws):
+        Xw, yw = [], []
+        for i in range(ws - 1, len(y)):
+            Xw.append(X[i - ws + 1:i + 1])
+            yw.append(y[i])
+        return np.array(Xw, dtype=np.float32), np.array(yw, dtype=np.float32)
+
+    def objective_gru_meta(trial):
+        hidden_size = trial.suggest_int('hidden_size', 16, 128)
+        num_layers = trial.suggest_int('num_layers', 1, 3)
+        dropout = trial.suggest_float('dropout', 0.0, 0.5)
+        lr_ = trial.suggest_float('lr', 1e-4, 1e-2, log=True)
+        batch_size = trial.suggest_categorical('batch_size', [16, 32, 64])
+        epochs = trial.suggest_int('epochs', 20, 100)
+        window_size = trial.suggest_int('window_size', 3, 20)
+        # 5-fold CV on windows
+        Xw, yw = _build_windows(X_oof_gru, y_oof, window_size)
+        if len(Xw) < 20: return float('inf')
+        kf = KFold(n_splits=5, shuffle=False)
+        fold_scores = []
+        for tr_i, va_i in kf.split(Xw):
+            model_ = GRUMeta(4, hidden_size, num_layers, dropout).to(device)
+            opt_ = torch.optim.Adam(model_.parameters(), lr=lr_)
+            crit_ = nn.MSELoss()
+            ds_tr = torch.utils.data.TensorDataset(
+                torch.tensor(Xw[tr_i]).to(device), torch.tensor(yw[tr_i]).to(device))
+            dl_tr = DataLoader(ds_tr, batch_size=batch_size, shuffle=True)
+            model_.train()
+            for _ in range(epochs):
+                for xb, yb in dl_tr:
+                    opt_.zero_grad(); loss = crit_(model_(xb), yb)
+                    loss.backward(); opt_.step()
+            model_.eval()
+            with torch.no_grad():
+                va_pred = model_(torch.tensor(Xw[va_i]).to(device)).cpu().numpy()
+            fold_scores.append(mean_squared_error(yw[va_i], va_pred))
+        return np.mean(fold_scores)
+
+    study_gru = optuna.create_study(direction='minimize')
+    study_gru.optimize(objective_gru_meta, n_trials=N_GRU_META, n_jobs=1)
+    bp_gru = study_gru.best_params
+    ws_gru = bp_gru['window_size']
+    # Train final
+    Xw_full, yw_full = _build_windows(X_oof_gru, y_oof, ws_gru)
+    final_gru = GRUMeta(4, bp_gru['hidden_size'], bp_gru['num_layers'], bp_gru['dropout']).to(device)
+    opt_gru = torch.optim.Adam(final_gru.parameters(), lr=bp_gru['lr'])
+    crit_gru = nn.MSELoss()
+    ds_gru_full = torch.utils.data.TensorDataset(
+        torch.tensor(Xw_full).to(device), torch.tensor(yw_full).to(device))
+    dl_gru_full = DataLoader(ds_gru_full, batch_size=bp_gru['batch_size'], shuffle=True)
+    final_gru.train()
+    for _ in range(bp_gru['epochs']):
+        for xb, yb in dl_gru_full:
+            opt_gru.zero_grad(); loss = crit_gru(final_gru(xb), yb)
+            loss.backward(); opt_gru.step()
+    final_gru.eval()
+    # Predict on test set using sliding window
+    X_test_gru_scaled = scaler_gru.transform(X_test_linear)
+    with torch.no_grad():
+        for i in range(ws_gru - 1, len(ye)):
+            window = X_test_gru_scaled[i - ws_gru + 1:i + 1]
+            if not np.isnan(window).any():
+                x_t = torch.tensor(window, dtype=torch.float32).unsqueeze(0).to(device)
+                pmt_gru_meta[i] = final_gru(x_t).cpu().item()
+    print(f'  [GRU_META] ws={ws_gru}, {(~np.isnan(pmt_gru_meta)).sum()}/{len(ye)} válidas')
+except Exception as e:
+    logging.warning(f'[GRU_META] GRU Meta falló: {e}')
+    pmt_gru_meta = np.full(len(ye), np.nan)
+
+# --- PARTE NEW-2C: Transformer Meta (PyTorch) ---
+print('  > Transformer Meta (Ensamble Actual)...')
+pmt_trans_meta = np.full(len(ye), np.nan)
+try:
+    class PositionalEncoding(nn.Module):
+        def __init__(self, d_model, max_len=500):
+            super().__init__()
+            pe = torch.zeros(max_len, d_model)
+            position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+            div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-np.log(10000.0) / d_model))
+            pe[:, 0::2] = torch.sin(position * div_term)
+            if d_model > 1:
+                pe[:, 1::2] = torch.cos(position * div_term[:d_model // 2])
+            self.register_buffer('pe', pe.unsqueeze(0))
+        def forward(self, x):
+            return x + self.pe[:, :x.size(1), :]
+
+    class TransformerMeta(nn.Module):
+        def __init__(self, input_size, d_model, nhead, num_layers, dropout):
+            super().__init__()
+            self.input_proj = nn.Linear(input_size, d_model)
+            self.pos_enc = PositionalEncoding(d_model)
+            encoder_layer = nn.TransformerEncoderLayer(
+                d_model=d_model, nhead=nhead, dim_feedforward=d_model * 4,
+                dropout=dropout, batch_first=True)
+            self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+            self.fc = nn.Linear(d_model, 1)
+        def forward(self, x):
+            x = self.input_proj(x)
+            x = self.pos_enc(x)
+            x = self.transformer(x)
+            return self.fc(x[:, -1, :]).squeeze(-1)
+
+    scaler_trans = StandardScaler()
+    X_oof_trans = scaler_trans.fit_transform(X_oof)
+
+    def objective_trans_meta(trial):
+        d_model = trial.suggest_categorical('d_model', [16, 32, 64])
+        nhead = trial.suggest_categorical('nhead', [1, 2, 4])
+        if d_model % nhead != 0: return float('inf')
+        num_layers = trial.suggest_int('num_layers', 1, 3)
+        dropout = trial.suggest_float('dropout', 0.0, 0.4)
+        lr_ = trial.suggest_float('lr', 1e-4, 1e-2, log=True)
+        batch_size = trial.suggest_categorical('batch_size', [16, 32, 64])
+        epochs = trial.suggest_int('epochs', 20, 100)
+        window_size = trial.suggest_int('window_size', 3, 20)
+        Xw, yw = _build_windows(X_oof_trans, y_oof, window_size)
+        if len(Xw) < 20: return float('inf')
+        kf = KFold(n_splits=5, shuffle=False)
+        fold_scores = []
+        for tr_i, va_i in kf.split(Xw):
+            model_ = TransformerMeta(4, d_model, nhead, num_layers, dropout).to(device)
+            opt_ = torch.optim.Adam(model_.parameters(), lr=lr_)
+            crit_ = nn.MSELoss()
+            ds_tr = torch.utils.data.TensorDataset(
+                torch.tensor(Xw[tr_i]).to(device), torch.tensor(yw[tr_i]).to(device))
+            dl_tr = DataLoader(ds_tr, batch_size=batch_size, shuffle=True)
+            model_.train()
+            for _ in range(epochs):
+                for xb, yb in dl_tr:
+                    opt_.zero_grad(); loss = crit_(model_(xb), yb)
+                    loss.backward(); opt_.step()
+            model_.eval()
+            with torch.no_grad():
+                va_pred = model_(torch.tensor(Xw[va_i]).to(device)).cpu().numpy()
+            fold_scores.append(mean_squared_error(yw[va_i], va_pred))
+        return np.mean(fold_scores)
+
+    study_trans = optuna.create_study(direction='minimize')
+    study_trans.optimize(objective_trans_meta, n_trials=N_TRANS_META, n_jobs=1)
+    bp_trans = study_trans.best_params
+    ws_trans = bp_trans['window_size']
+    # Train final
+    Xw_full_t, yw_full_t = _build_windows(X_oof_trans, y_oof, ws_trans)
+    final_trans = TransformerMeta(4, bp_trans['d_model'], bp_trans['nhead'],
+                                  bp_trans['num_layers'], bp_trans['dropout']).to(device)
+    opt_trans = torch.optim.Adam(final_trans.parameters(), lr=bp_trans['lr'])
+    crit_trans = nn.MSELoss()
+    ds_trans_full = torch.utils.data.TensorDataset(
+        torch.tensor(Xw_full_t).to(device), torch.tensor(yw_full_t).to(device))
+    dl_trans_full = DataLoader(ds_trans_full, batch_size=bp_trans['batch_size'], shuffle=True)
+    final_trans.train()
+    for _ in range(bp_trans['epochs']):
+        for xb, yb in dl_trans_full:
+            opt_trans.zero_grad(); loss = crit_trans(final_trans(xb), yb)
+            loss.backward(); opt_trans.step()
+    final_trans.eval()
+    # Predict on test set using sliding window
+    X_test_trans_scaled = scaler_trans.transform(X_test_linear)
+    with torch.no_grad():
+        for i in range(ws_trans - 1, len(ye)):
+            window = X_test_trans_scaled[i - ws_trans + 1:i + 1]
+            if not np.isnan(window).any():
+                x_t = torch.tensor(window, dtype=torch.float32).unsqueeze(0).to(device)
+                pmt_trans_meta[i] = final_trans(x_t).cpu().item()
+    print(f'  [TRANS_META] ws={ws_trans}, d_model={bp_trans["d_model"]}, nhead={bp_trans["nhead"]}, {(~np.isnan(pmt_trans_meta)).sum()}/{len(ye)} válidas')
+except Exception as e:
+    logging.warning(f'[TRANS_META] Transformer Meta falló: {e}')
+    pmt_trans_meta = np.full(len(ye), np.nan)
+
+
 # Solo truncar las primeras ws-1 posiciones de base models (warm-up del meta)
 start_idx = max(ws_meta_actual, ws_meta_ablation, ws_meta_sota) - 1
 for arr in [pl, pc, pt, pm, pb]:
@@ -640,6 +992,11 @@ preds_p = {
     'RD':  safe_inv_recon(pmt_ridge),
     'LS':  safe_inv_recon(pmt_lasso),
     'EN':  safe_inv_recon(pmt_elasticnet),
+    'LGB_META':   safe_inv_recon(pmt_lgb_meta),
+    'RF_META':    safe_inv_recon(pmt_rf_meta),
+    'MLP_META':   safe_inv_recon(pmt_mlp_meta),
+    'GRU_META':   safe_inv_recon(pmt_gru_meta),
+    'TRANS_META': safe_inv_recon(pmt_trans_meta),
     'AB':  safe_inv_recon(pmt_ablation),
     'SM':  safe_inv_recon(pmt_sota),
     # Predicciones externas (Parker): los valores están en escala LogReturn_MinMax [0,1]
@@ -695,6 +1052,9 @@ if v_mask.any():
 
 meta_raw_preds = {'MT': pmt_actual, 'SA': pmt_simple_avg, 'WA': pmt_weighted_avg,
                   'RD': pmt_ridge, 'LS': pmt_lasso, 'EN': pmt_elasticnet,
+                  'LGB_META': pmt_lgb_meta, 'RF_META': pmt_rf_meta,
+                  'MLP_META': pmt_mlp_meta, 'GRU_META': pmt_gru_meta,
+                  'TRANS_META': pmt_trans_meta,
                   'AB': pmt_ablation, 'SM': pmt_sota, 'XGB_META_EXT': pmt_parker}
 meta_raw_preds['Ensamble Actual'] = meta_raw_preds['MT']  # Alias para acceso por nombre
 
@@ -845,7 +1205,8 @@ def generate_compare_report(token, cp, gi_v, pr_r, preds_p, mp, MDL, zs, ze, out
 """
 
     # ===== PARTE 4: Comparación de Meta Modelos — Ensamble Actual =====
-    meta_compare_keys = ['MT', 'SA', 'WA', 'RD', 'LS', 'EN']
+    meta_compare_keys = ['MT', 'SA', 'WA', 'RD', 'LS', 'EN',
+                         'LGB_META', 'RF_META', 'MLP_META', 'GRU_META', 'TRANS_META']
     meta_compare_rows = []
     for km in meta_compare_keys:
         pred = preds_p.get(km)
@@ -1299,7 +1660,7 @@ def dm_test(d: np.ndarray) -> tuple[float, float]:
     p_value = 2 * (1 - t_dist.cdf(abs(dm_stat), df=T-1))
     return dm_stat, p_value
 
-logging.info("[DM] Iniciando pruebas Diebold-Mariano sobre 9 meta modelos (36 pares)...")
+logging.info("[DM] Iniciando pruebas Diebold-Mariano sobre 14 meta modelos (91 pares)...")
 
 # Validar que MT existe en preds_p
 if 'MT' not in preds_p:
@@ -1307,9 +1668,11 @@ if 'MT' not in preds_p:
 
 # 5A: target_metas ampliado con nuevos keys
 target_metas = ['MT', 'AB', 'SM', 'XGB_META_EXT',
-                'SA', 'WA', 'RD', 'LS', 'EN']
+                'SA', 'WA', 'RD', 'LS', 'EN',
+                'LGB_META', 'RF_META', 'MLP_META',
+                'GRU_META', 'TRANS_META']
 
-# Generar todos los pares únicos C(9,2) = 36
+# Generar todos los pares únicos C(14,2) = 91
 dm_all_pairs = list(combinations(target_metas, 2))
 
 dm_results = []
@@ -1334,7 +1697,8 @@ for (ki, kj) in dm_all_pairs:
             })
 
 # 5B: Organizar en bloques
-actual_keys = {'MT', 'SA', 'WA', 'RD', 'LS', 'EN'}
+actual_keys = {'MT', 'SA', 'WA', 'RD', 'LS', 'EN',
+               'LGB_META', 'RF_META', 'MLP_META', 'GRU_META', 'TRANS_META'}
 bloque1 = []  # Ensamble Actual vs Ensamble Actual
 bloque2 = []  # Ensamble Actual vs AB
 bloque3 = []  # Ensamble Actual vs SM
@@ -1382,7 +1746,7 @@ if os.path.exists(html_path):
         dm_html = """
         <div class="card">
             <h2>Prueba de Diebold-Mariano (Escala USD: Errores Cuadráticos)</h2>
-            <p style="color:#666; font-size:0.9rem; margin-bottom:12px;">H0: Los modelos tienen la misma precisión predictiva. p-valor &lt; 0.05 indica diferencia significativa. C(9,2) = 36 pares.</p>
+            <p style="color:#666; font-size:0.9rem; margin-bottom:12px;">H0: Los modelos tienen la misma precisión predictiva. p-valor &lt; 0.05 indica diferencia significativa. C(14,2) = 91 pares.</p>
             <table class="metrics-table">
                 <thead><tr>
                     <th>Modelo A</th><th>Modelo B</th>
@@ -1419,5 +1783,5 @@ if os.path.exists(html_path):
 
     with open(html_path, 'w', encoding='utf-8') as f:
         f.write(str(soup))
-    print(f"[DM] {len(dm_results)} pares DM (de 36 posibles) inyectados exitosamente en {html_path}")
+    print(f"[DM] {len(dm_results)} pares DM (de 91 posibles) inyectados exitosamente en {html_path}")
 
