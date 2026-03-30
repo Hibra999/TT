@@ -20,6 +20,9 @@ from model.sota.stacking_ensemble import (
 
 from preprocessing.walk_forward import wfrw; from features.tecnical_indicators import TA; from features.top_n import top_k
 from sklearn.preprocessing import MinMaxScaler; import torch
+from sklearn.linear_model import Ridge, Lasso, ElasticNet
+from sklearn.metrics import mean_squared_error
+from sklearn.model_selection import KFold
 
 
 def build_oof_dataframe_ablation(oof_lgb, oof_cb, oof_moirai, y):
@@ -82,6 +85,11 @@ MDL = {
     'MO':  ('#ff7f0e', 'Moirai-MoE (Base Actual)'),
     'BL':  ('#e377c2', 'Base LSTM (Base SOTA)'),
     'MT':  ('#17becf', 'Ensamble Actual'),
+    'SA':  ('#aec7e8', 'Simple Average (Ensamble Actual)'),
+    'WA':  ('#ffbb78', 'Weighted Average (Ensamble Actual)'),
+    'RD':  ('#98df8a', 'Ridge (Ensamble Actual)'),
+    'LS':  ('#ff9896', 'Lasso (Ensamble Actual)'),
+    'EN':  ('#c5b0d5', 'Elastic Net (Ensamble Actual)'),
     'AB':  ('#e377c2', 'Ours (Ensamble Actual Sin TimeXer)'),
     'SM':  ('#d62728', 'Yu et al. [44] 2025'),
     'LSTM_EXT': ('#ff1493', 'LSTM (Externo)'),
@@ -95,10 +103,10 @@ MDL = {
 # ===== CONFIG =====
 TOKEN = 'KO'
 # TOKEN = 'BTC/USDT'
-N_LGB, N_CB = 10, 10
-N_TX, N_MO = 10, 10
-N_BL = 10 
-N_MT, N_AB, N_SM = 10 , 10, 10 
+N_LGB, N_CB = 100, 100
+N_TX, N_MO = 100, 100
+N_BL = 100 
+N_MT, N_AB, N_SM = 100 , 100, 100 
 
 from datetime import datetime
 train_start = '2015-01-01'
@@ -451,6 +459,135 @@ if meta_model_sota is not None:
                 pmt_sota[i] = meta_model_sota(x_t).cpu().item()
     print(f'  [SM] {(~np.isnan(pmt_sota)).sum()}/{len(ye)} válidas')
 
+# --- PARTE 1A: Simple Average ---
+print('  > Simple Average (Ensamble Actual)...')
+pmt_simple_avg = np.full(len(ye), np.nan)
+try:
+    mask_sa = (~np.isnan(pl)) & (~np.isnan(pc)) & (~np.isnan(pt)) & (~np.isnan(pm))
+    pmt_simple_avg[mask_sa] = np.mean(
+        np.column_stack([pl[mask_sa], pc[mask_sa], pt[mask_sa], pm[mask_sa]]), axis=1
+    )
+    print(f'  [SA] {(~np.isnan(pmt_simple_avg)).sum()}/{len(ye)} válidas')
+except Exception as e:
+    logging.warning(f'[SA] Simple Average falló: {e}')
+    pmt_simple_avg = np.full(len(ye), np.nan)
+
+# --- PARTE 1B: Weighted Average (Optuna) ---
+print('  > Weighted Average (Ensamble Actual)...')
+pmt_weighted_avg = np.full(len(ye), np.nan)
+try:
+    def objective_weighted_avg(trial, oof_df):
+        w = np.array([
+            trial.suggest_float('w_lgb', 0.0, 1.0),
+            trial.suggest_float('w_cb',  0.0, 1.0),
+            trial.suggest_float('w_tx',  0.0, 1.0),
+            trial.suggest_float('w_mo',  0.0, 1.0),
+        ])
+        w = w / w.sum()
+        cols = ['lgb', 'catboost', 'timexer', 'moirai']
+        pred = (oof_df[cols].values * w).sum(axis=1)
+        return mean_squared_error(oof_df['target'].values, pred)
+
+    study_wa = optuna.create_study(direction='minimize')
+    study_wa.optimize(lambda t: objective_weighted_avg(t, oof_df_actual), n_trials=N_MT, n_jobs=1)
+    best_w = np.array([
+        study_wa.best_params['w_lgb'],
+        study_wa.best_params['w_cb'],
+        study_wa.best_params['w_tx'],
+        study_wa.best_params['w_mo'],
+    ])
+    best_w = best_w / best_w.sum()
+    print(f'  [WA] Pesos óptimos: LGB={best_w[0]:.4f}, CB={best_w[1]:.4f}, TX={best_w[2]:.4f}, MO={best_w[3]:.4f}')
+    mask_wa = (~np.isnan(pl)) & (~np.isnan(pc)) & (~np.isnan(pt)) & (~np.isnan(pm))
+    X_test_wa = np.column_stack([pl[mask_wa], pc[mask_wa], pt[mask_wa], pm[mask_wa]])
+    pmt_weighted_avg[mask_wa] = (X_test_wa * best_w).sum(axis=1)
+    print(f'  [WA] {(~np.isnan(pmt_weighted_avg)).sum()}/{len(ye)} válidas')
+except Exception as e:
+    logging.warning(f'[WA] Weighted Average falló: {e}')
+    pmt_weighted_avg = np.full(len(ye), np.nan)
+
+# --- PARTE 2: Meta modelos lineales (Ridge, Lasso, Elastic Net) ---
+oof_cols = ['lgb', 'catboost', 'timexer', 'moirai']
+X_oof = oof_df_actual[oof_cols].values
+y_oof = oof_df_actual['target'].values
+X_test_linear = np.column_stack([pl, pc, pt, pm])
+
+# Ridge
+print('  > Ridge (Ensamble Actual)...')
+pmt_ridge = np.full(len(ye), np.nan)
+try:
+    def objective_ridge(trial):
+        alpha = trial.suggest_float('alpha', 1e-4, 100.0, log=True)
+        kf = KFold(n_splits=5, shuffle=False)
+        scores = []
+        for tr_idx, va_idx in kf.split(X_oof):
+            m = Ridge(alpha=alpha)
+            m.fit(X_oof[tr_idx], y_oof[tr_idx])
+            scores.append(mean_squared_error(y_oof[va_idx], m.predict(X_oof[va_idx])))
+        return np.mean(scores)
+
+    study_rd = optuna.create_study(direction='minimize')
+    study_rd.optimize(objective_ridge, n_trials=N_MT, n_jobs=1)
+    best_ridge = Ridge(alpha=study_rd.best_params['alpha'])
+    best_ridge.fit(X_oof, y_oof)
+    mask_rd = ~np.any(np.isnan(X_test_linear), axis=1)
+    pmt_ridge[mask_rd] = best_ridge.predict(X_test_linear[mask_rd])
+    print(f'  [RD] alpha={study_rd.best_params["alpha"]:.6f}, {(~np.isnan(pmt_ridge)).sum()}/{len(ye)} válidas')
+except Exception as e:
+    logging.warning(f'[RD] Ridge falló: {e}')
+    pmt_ridge = np.full(len(ye), np.nan)
+
+# Lasso
+print('  > Lasso (Ensamble Actual)...')
+pmt_lasso = np.full(len(ye), np.nan)
+try:
+    def objective_lasso(trial):
+        alpha = trial.suggest_float('alpha', 1e-4, 100.0, log=True)
+        kf = KFold(n_splits=5, shuffle=False)
+        scores = []
+        for tr_idx, va_idx in kf.split(X_oof):
+            m = Lasso(alpha=alpha, max_iter=10000)
+            m.fit(X_oof[tr_idx], y_oof[tr_idx])
+            scores.append(mean_squared_error(y_oof[va_idx], m.predict(X_oof[va_idx])))
+        return np.mean(scores)
+
+    study_ls = optuna.create_study(direction='minimize')
+    study_ls.optimize(objective_lasso, n_trials=N_MT, n_jobs=1)
+    best_lasso = Lasso(alpha=study_ls.best_params['alpha'], max_iter=10000)
+    best_lasso.fit(X_oof, y_oof)
+    mask_ls = ~np.any(np.isnan(X_test_linear), axis=1)
+    pmt_lasso[mask_ls] = best_lasso.predict(X_test_linear[mask_ls])
+    print(f'  [LS] alpha={study_ls.best_params["alpha"]:.6f}, {(~np.isnan(pmt_lasso)).sum()}/{len(ye)} válidas')
+except Exception as e:
+    logging.warning(f'[LS] Lasso falló: {e}')
+    pmt_lasso = np.full(len(ye), np.nan)
+
+# Elastic Net
+print('  > Elastic Net (Ensamble Actual)...')
+pmt_elasticnet = np.full(len(ye), np.nan)
+try:
+    def objective_elasticnet(trial):
+        alpha = trial.suggest_float('alpha', 1e-4, 100.0, log=True)
+        l1_ratio = trial.suggest_float('l1_ratio', 0.0, 1.0)
+        kf = KFold(n_splits=5, shuffle=False)
+        scores = []
+        for tr_idx, va_idx in kf.split(X_oof):
+            m = ElasticNet(alpha=alpha, l1_ratio=l1_ratio, max_iter=10000)
+            m.fit(X_oof[tr_idx], y_oof[tr_idx])
+            scores.append(mean_squared_error(y_oof[va_idx], m.predict(X_oof[va_idx])))
+        return np.mean(scores)
+
+    study_en = optuna.create_study(direction='minimize')
+    study_en.optimize(objective_elasticnet, n_trials=N_MT, n_jobs=1)
+    best_en = ElasticNet(alpha=study_en.best_params['alpha'], l1_ratio=study_en.best_params['l1_ratio'], max_iter=10000)
+    best_en.fit(X_oof, y_oof)
+    mask_en = ~np.any(np.isnan(X_test_linear), axis=1)
+    pmt_elasticnet[mask_en] = best_en.predict(X_test_linear[mask_en])
+    print(f'  [EN] alpha={study_en.best_params["alpha"]:.6f}, l1_ratio={study_en.best_params["l1_ratio"]:.4f}, {(~np.isnan(pmt_elasticnet)).sum()}/{len(ye)} válidas')
+except Exception as e:
+    logging.warning(f'[EN] Elastic Net falló: {e}')
+    pmt_elasticnet = np.full(len(ye), np.nan)
+
 # Solo truncar las primeras ws-1 posiciones de base models (warm-up del meta)
 start_idx = max(ws_meta_actual, ws_meta_ablation, ws_meta_sota) - 1
 for arr in [pl, pc, pt, pm, pb]:
@@ -498,6 +635,11 @@ preds_p = {
     'MO':  safe_inv_recon(pm),
     'BL':  safe_inv_recon(pb),
     'MT':  safe_inv_recon(pmt_actual),
+    'SA':  safe_inv_recon(pmt_simple_avg),
+    'WA':  safe_inv_recon(pmt_weighted_avg),
+    'RD':  safe_inv_recon(pmt_ridge),
+    'LS':  safe_inv_recon(pmt_lasso),
+    'EN':  safe_inv_recon(pmt_elasticnet),
     'AB':  safe_inv_recon(pmt_ablation),
     'SM':  safe_inv_recon(pmt_sota),
     # Predicciones externas (Parker): los valores están en escala LogReturn_MinMax [0,1]
@@ -551,7 +693,9 @@ if v_mask.any():
     p_log = np.log(p_usd_parker[v_mask] / prev[v_mask])
     pmt_parker[v_mask] = sct.transform(p_log.reshape(-1, 1)).flatten()
 
-meta_raw_preds = {'MT': pmt_actual, 'AB': pmt_ablation, 'SM': pmt_sota, 'XGB_META_EXT': pmt_parker}
+meta_raw_preds = {'MT': pmt_actual, 'SA': pmt_simple_avg, 'WA': pmt_weighted_avg,
+                  'RD': pmt_ridge, 'LS': pmt_lasso, 'EN': pmt_elasticnet,
+                  'AB': pmt_ablation, 'SM': pmt_sota, 'XGB_META_EXT': pmt_parker}
 meta_raw_preds['Ensamble Actual'] = meta_raw_preds['MT']  # Alias para acceso por nombre
 
 # Verificar existencia de meta_raw_preds['Ensamble Actual']
@@ -699,6 +843,58 @@ def generate_compare_report(token, cp, gi_v, pr_r, preds_p, mp, MDL, zs, ze, out
         
     html += """    </tbody></table></div>
 """
+
+    # ===== PARTE 4: Comparación de Meta Modelos — Ensamble Actual =====
+    meta_compare_keys = ['MT', 'SA', 'WA', 'RD', 'LS', 'EN']
+    meta_compare_rows = []
+    for km in meta_compare_keys:
+        pred = preds_p.get(km)
+        if pred is None:
+            meta_compare_rows.append({'key': km, 'valid': False})
+            continue
+        mask = (~np.isnan(pred)) & (~np.isnan(pr_r))
+        if mask.sum() > 0 and met_fn is not None and da_fn is not None:
+            m = met_fn(pr_r[mask], pred[mask])
+            da_val = da_fn(pr_r[mask], pred[mask]) if mask.sum() >= 2 else float('nan')
+            meta_compare_rows.append({
+                'key': km, 'valid': True,
+                'MSE': m['MSE'], 'RMSE': m['RMSE'], 'MAE': m['MAE'], 'R2': m['R2'],
+                'DA': round(da_val, 2)
+            })
+        else:
+            meta_compare_rows.append({'key': km, 'valid': False})
+
+    # Best per column
+    mc_best = {}
+    mc_valid = [r for r in meta_compare_rows if r['valid']]
+    if mc_valid:
+        for mn in ['MSE', 'RMSE', 'MAE']:
+            vals = [r[mn] for r in mc_valid if not np.isnan(r[mn])]
+            if vals: mc_best[mn] = min(vals)
+        for mn in ['R2', 'DA']:
+            vals = [r[mn] for r in mc_valid if not np.isnan(r[mn])]
+            if vals: mc_best[mn] = max(vals)
+
+    html += '  <div class="card"><h2>Comparación de Meta Modelos — Ensamble Actual</h2>\n'
+    html += '    <table class="metrics-table"><thead><tr><th>MODELO</th><th>MSE</th><th>RMSE</th><th>MAE</th><th>R2</th><th>DA (%)</th></tr></thead>\n'
+    html += '    <tbody>\n'
+    for row in meta_compare_rows:
+        color = MDL[row['key']][0] if row['key'] in MDL else '#888'
+        name = MDL[row['key']][1] if row['key'] in MDL else row['key']
+        badge = f'<span class="model-badge" style="background:{color}">{name}</span>'
+        if not row['valid']:
+            html += f'    <tr><td>{badge}</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td></tr>\n'
+            continue
+        cells = ''
+        for mn in ['MSE', 'RMSE', 'MAE', 'R2']:
+            val = row[mn]
+            hi = ' style="background:#d4edda"' if mn in mc_best and abs(val - mc_best[mn]) < 1e-9 else ''
+            cells += f'<td{hi}>{val:.6f}</td>'
+        da_val = row['DA']
+        da_hi = ' style="background:#d4edda"' if 'DA' in mc_best and abs(da_val - mc_best['DA']) < 1e-9 else ''
+        cells += f'<td{da_hi}>{da_val:.2f}%</td>'
+        html += f'    <tr><td>{badge}</td>{cells}</tr>\n'
+    html += '    </tbody></table></div>\n'
 
     # ===== SECCIÓN: Métricas por Ensamble (Test Set — Escala USD) =====
     ensemble_groups = [
@@ -1103,24 +1299,21 @@ def dm_test(d: np.ndarray) -> tuple[float, float]:
     p_value = 2 * (1 - t_dist.cdf(abs(dm_stat), df=T-1))
     return dm_stat, p_value
 
-logging.info("[DM] Iniciando pruebas Diebold-Mariano sobre los 4 meta modelos...")
+logging.info("[DM] Iniciando pruebas Diebold-Mariano sobre 9 meta modelos (36 pares)...")
 
 # Validar que MT existe en preds_p
 if 'MT' not in preds_p:
     raise KeyError('Modelo "Meta LSTM (Ensamble Actual)" (key=MT) no encontrado en preds_p')
 
-# Orden explícito de pares para la tabla DM (6 combinaciones C(4,2))
-dm_pairs_order = [
-    ('MT', 'AB'),
-    ('MT', 'SM'),
-    ('MT', 'XGB_META_EXT'),
-    ('AB', 'SM'),
-    ('AB', 'XGB_META_EXT'),
-    ('SM', 'XGB_META_EXT'),
-]
+# 5A: target_metas ampliado con nuevos keys
+target_metas = ['MT', 'AB', 'SM', 'XGB_META_EXT',
+                'SA', 'WA', 'RD', 'LS', 'EN']
+
+# Generar todos los pares únicos C(9,2) = 36
+dm_all_pairs = list(combinations(target_metas, 2))
 
 dm_results = []
-for (ki, kj) in dm_pairs_order:
+for (ki, kj) in dm_all_pairs:
     if ki in preds_p and kj in preds_p:
         pi, pj = preds_p[ki], preds_p[kj]
         # Alinear por índices no nulos comunes
@@ -1134,10 +1327,40 @@ for (ki, kj) in dm_pairs_order:
             else:
                 better = '—'   # Sin diferencia significativa
             dm_results.append({
+                'key_a': ki, 'key_b': kj,
                 'model_a': MDL[ki][1], 'model_b': MDL[kj][1],
                 'stat': stat, 'p_value': pval, 'sig': pval < 0.05,
                 'better': better
             })
+
+# 5B: Organizar en bloques
+actual_keys = {'MT', 'SA', 'WA', 'RD', 'LS', 'EN'}
+bloque1 = []  # Ensamble Actual vs Ensamble Actual
+bloque2 = []  # Ensamble Actual vs AB
+bloque3 = []  # Ensamble Actual vs SM
+bloque4 = []  # Ensamble Actual vs XGB_META_EXT (Parker)
+bloque5 = []  # Comparaciones cruzadas restantes
+
+for r in dm_results:
+    ka, kb = r['key_a'], r['key_b']
+    if ka in actual_keys and kb in actual_keys:
+        bloque1.append(r)
+    elif (ka in actual_keys and kb == 'AB') or (ka == 'AB' and kb in actual_keys):
+        bloque2.append(r)
+    elif (ka in actual_keys and kb == 'SM') or (ka == 'SM' and kb in actual_keys):
+        bloque3.append(r)
+    elif (ka in actual_keys and kb == 'XGB_META_EXT') or (ka == 'XGB_META_EXT' and kb in actual_keys):
+        bloque4.append(r)
+    else:
+        bloque5.append(r)
+
+bloques = [
+    ('Bloque 1: Ensamble Actual vs Ensamble Actual', bloque1),
+    ('Bloque 2: Ensamble Actual vs Ours Sin TimeXer', bloque2),
+    ('Bloque 3: Ensamble Actual vs Yu et al.', bloque3),
+    ('Bloque 4: Ensamble Actual vs Parker et al.', bloque4),
+    ('Bloque 5: Comparaciones cruzadas restantes', bloque5),
+]
 
 # Inyectar/reemplazar tabla DM en el HTML existente
 safe_token = TOKEN.replace('/', '-').replace('^', '').replace('=', '-')
@@ -1159,7 +1382,7 @@ if os.path.exists(html_path):
         dm_html = """
         <div class="card">
             <h2>Prueba de Diebold-Mariano (Escala USD: Errores Cuadráticos)</h2>
-            <p style="color:#666; font-size:0.9rem; margin-bottom:12px;">H0: Los modelos tienen la misma precisión predictiva. p-valor &lt; 0.05 indica diferencia significativa.</p>
+            <p style="color:#666; font-size:0.9rem; margin-bottom:12px;">H0: Los modelos tienen la misma precisión predictiva. p-valor &lt; 0.05 indica diferencia significativa. C(9,2) = 36 pares.</p>
             <table class="metrics-table">
                 <thead><tr>
                     <th>Modelo A</th><th>Modelo B</th>
@@ -1167,28 +1390,34 @@ if os.path.exists(html_path):
                     <th>Significativo</th><th>Mejor Modelo</th>
                 </tr></thead>
                 <tbody>"""
-        for r in dm_results:
-            st = f'<strong style="color:#000">{r["stat"]:.4f}</strong>' if r['sig'] else f'{r["stat"]:.4f}'
-            pv = f'<strong style="color:#000">{r["p_value"]:.4f}</strong>' if r['sig'] else f'{r["p_value"]:.4f}'
-            sig_text = '<strong style="color:#000">SÍ</strong>' if r['sig'] else 'No'
-            better_cell = (
-                f'<td><strong>{r["better"]}</strong></td>'
-                if r['sig']
-                else '<td style="color:#999">Sin diferencia significativa</td>'
-            )
-            dm_html += (
-                f'<tr>'
-                f'<td>{r["model_a"]}</td>'
-                f'<td>{r["model_b"]}</td>'
-                f'<td>{st}</td>'
-                f'<td>{pv}</td>'
-                f'<td>{"SÍ" if r["sig"] else "No"}</td>'
-                f'{better_cell}'
-                f'</tr>'
-            )
+
+        for bloque_name, bloque_rows in bloques:
+            if not bloque_rows:
+                continue
+            # Separador de bloque
+            dm_html += f'<tr style="background:#f0f0f0"><td colspan="6" style="font-weight:600;font-size:0.9rem;padding:10px 18px;color:#333">{bloque_name}</td></tr>'
+            for r in bloque_rows:
+                st = f'<strong style="color:#000">{r["stat"]:.4f}</strong>' if r['sig'] else f'{r["stat"]:.4f}'
+                pv = f'<strong style="color:#000">{r["p_value"]:.4f}</strong>' if r['sig'] else f'{r["p_value"]:.4f}'
+                better_cell = (
+                    f'<td><strong>{r["better"]}</strong></td>'
+                    if r['sig']
+                    else '<td style="color:#999">Sin diferencia significativa</td>'
+                )
+                dm_html += (
+                    f'<tr>'
+                    f'<td>{r["model_a"]}</td>'
+                    f'<td>{r["model_b"]}</td>'
+                    f'<td>{st}</td>'
+                    f'<td>{pv}</td>'
+                    f'<td>{"SÍ" if r["sig"] else "No"}</td>'
+                    f'{better_cell}'
+                    f'</tr>'
+                )
         dm_html += "</tbody></table></div>"
         container.append(BeautifulSoup(dm_html, 'html.parser'))
 
     with open(html_path, 'w', encoding='utf-8') as f:
         f.write(str(soup))
-    print(f"[DM] 6 pares DM inyectados exitosamente en {html_path}")
+    print(f"[DM] {len(dm_results)} pares DM (de 36 posibles) inyectados exitosamente en {html_path}")
+
