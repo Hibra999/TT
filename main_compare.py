@@ -101,12 +101,12 @@ MDL = {
 }
 
 # ===== CONFIG =====
-TOKEN = 'KO'
+TOKEN = '^GSPC'
 # TOKEN = 'BTC/USDT'
-N_LGB, N_CB = 100, 100
-N_TX, N_MO = 100, 100
-N_BL = 100 
-N_MT, N_AB, N_SM = 100 , 100, 100 
+N_LGB, N_CB = 10, 10
+N_TX, N_MO = 10, 10
+N_BL = 10 
+N_MT, N_AB, N_SM = 10 , 10, 10
 
 from datetime import datetime
 train_start = '2015-01-01'
