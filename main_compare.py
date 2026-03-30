@@ -1638,6 +1638,10 @@ if os.path.exists(html_path_meta):
 # ===== PRUEBA DE DIEBOLD-MARIANO (ESCALA USD) =====
 def check_dm_assumptions(d: np.ndarray, name: str) -> None:
     """Verifica estacionariedad y autocorrelación del diferencial de pérdida."""
+    # Guard: si d es constante, ADF y Ljung-Box no aplican
+    if np.std(d) < 1e-15:
+        logging.warning(f"[DM:{name}] d_t es constante (modelos idénticos). Se omiten tests de supuestos.")
+        return
     # 1. ADF (Estacionariedad)
     adf_res = adfuller(d, autolag='AIC')
     if adf_res[1] > 0.05:
@@ -1650,12 +1654,17 @@ def check_dm_assumptions(d: np.ndarray, name: str) -> None:
 
 def dm_test(d: np.ndarray) -> tuple[float, float]:
     """Prueba DM con corrección HAC (Heteroskedasticity and Autocorrelation Consistent)."""
+    # Guard: si d es constante, no hay diferencia → DM=0, p=1
+    if np.std(d) < 1e-15:
+        return 0.0, 1.0
     T = len(d)
     h = int(np.floor(T ** (1/3)))
     d_bar = d.mean()
     # OLS sobre constante para obtener varianza HAC
     model = OLS(d, np.ones(T)).fit()
     hac_var = cov_hac(model, nlags=h).item()
+    if hac_var < 1e-15:
+        return 0.0, 1.0
     dm_stat = d_bar / np.sqrt(hac_var / T)
     p_value = 2 * (1 - t_dist.cdf(abs(dm_stat), df=T-1))
     return dm_stat, p_value
