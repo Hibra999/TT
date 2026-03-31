@@ -643,7 +643,7 @@ for km, v in preds_p.items():
         y_valid = pr_r[~np.isnan(v)]
         if len(v_valid) > 0 and len(y_valid) > 0:
             da_val = directional_accuracy(y_valid, v_valid) if len(v_valid) >= 2 else 0.0
-            mp.append({'Modelo': MDL[km][1], **met(y_valid, v_valid), 'DA': round(da_val, 2)})
+            mp.append({'Modelo': MDL[km][1], 'Color': MDL[km][0], **met(y_valid, v_valid), 'DA': round(da_val, 2)})
 
 # Ordenar el reporte por MAE descendente para mejor visualización
 mp.sort(key=lambda x: x['MAE'])

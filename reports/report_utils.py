@@ -266,6 +266,7 @@ def enhance_report_with_metrics(html_path, preds_p, MDL, pr_r, met_fn, da_fn):
 
     # Buscar la tabla de métricas
     meta_table = None
+    meta_rows_data = []
     for h2 in soup.find_all('h2'):
         if 'Metricas Generales' in h2.text:
             meta_table = h2.find_next('table', class_='metrics-table')
@@ -281,7 +282,7 @@ def enhance_report_with_metrics(html_path, preds_p, MDL, pr_r, met_fn, da_fn):
             thead_tr.append(th)
 
         # 2. Obtener datos de los meta-modelos principales para la tabla
-        meta_keys = ['MT', 'AB', 'SM', 'XGB_META_EXT'] 
+        meta_keys = ['MT', 'AB', 'SM', 'XGB_META_EXT']
         meta_rows_data = []
         for km in meta_keys:
             if km in preds_p:
@@ -383,7 +384,8 @@ def inject_dm_results(html_path, bloques):
                 st = f'<strong>{r["stat"]:.4f}</strong>' if r['sig'] else f'{r["stat"]:.4f}'
                 pv = f'<strong>{r["p_value"]:.4f}</strong>' if r['sig'] else f'{r["p_value"]:.4f}'
                 better_cell = f'<td><strong>{r["better"]}</strong></td>' if r['sig'] else '<td style="color:#999">Sin diferencia significativa</td>'
-                dm_html += f'<tr><td>{r["model_a"]}</td><td>{r["model_b"]}</td><td>{st}</td><td>{pv}</td><td>{"S\u00cd" if r["sig"] else "No"}</td>{better_cell}</tr>'
+                sig_text = "SÍ" if r["sig"] else "No"
+                dm_html += f'<tr><td>{r["model_a"]}</td><td>{r["model_b"]}</td><td>{st}</td><td>{pv}</td><td>{sig_text}</td>{better_cell}</tr>'
 
         dm_html += "</tbody></table></div>"
         container.append(BeautifulSoup(dm_html, 'html.parser'))
