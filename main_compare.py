@@ -19,7 +19,7 @@ from model.meta_model.gru_model import train_and_predict as gru_predict
 from model.meta_model.transformer_model import train_and_predict as trans_predict
 from model.meta_model.lgbm_meta import train_and_predict as lgbm_meta_predict
 from model.meta_model.rf_meta import train_and_predict as rf_meta_predict
-from preprocessing.oof_generators import build_oof_dataframe, collect_oof_predictions
+from preprocessing.oof_generators import build_oof_dataframe, collect_oof_predictions, build_oof_dataframe_refit
 
 
 # Modelos SOTA
@@ -31,25 +31,6 @@ from model.sota.stacking_ensemble import (
 from preprocessing.walk_forward import wfrw; from features.tecnical_indicators import TA; from features.top_n import top_k
 from sklearn.preprocessing import MinMaxScaler; import torch
 from sklearn.metrics import mean_squared_error
-
-
-def build_oof_dataframe_ablation(oof_lgb, oof_cb, oof_moirai, y):
-    """Construye OOF para Ensamble Actual SIN TimeXer."""
-    preds_lgb, idx_lgb, _ = collect_oof_predictions(oof_lgb)
-    preds_cb, idx_cb, _ = collect_oof_predictions(oof_cb)
-    preds_moirai, idx_moirai, _ = collect_oof_predictions(oof_moirai)
-    
-    df_lgb = pd.DataFrame({'idx': idx_lgb, 'lgb': preds_lgb})
-    df_cb = pd.DataFrame({'idx': idx_cb, 'catboost': preds_cb})
-    df_moirai = pd.DataFrame({'idx': idx_moirai, 'moirai': preds_moirai})
-    
-    y_array = y.values if isinstance(y, pd.Series) else np.array(y)
-    
-    merged = df_lgb.merge(df_cb, on='idx', how='inner').merge(df_moirai, on='idx', how='inner')
-    merged['target'] = merged['idx'].apply(lambda i: y_array[int(i)] if int(i) < len(y_array) else np.nan)
-    merged = merged.dropna().sort_values('idx').reset_index(drop=True)
-    return merged
-
 
 warnings.filterwarnings("ignore")
 try:
@@ -370,32 +351,52 @@ bp_b = oof_b.get('params', sb.best_params)
 
 
 # Meta Ensamble Actual
-print(f'[6/11] Entrenando Meta LSTM (Ensamble Actual Completo)...')
-oof_df_actual = build_oof_dataframe(oof_l, oof_c, oof_t, oof_m, yt)
+print(f'[6/11] Generando OOF con refitting + cross-boundary context...')
+oof_df_actual = build_oof_dataframe_refit(
+    bp_lgb=bp_l,
+    bp_cb=bp_c,
+    bp_tx=bp_t,
+    bp_moirai=bp_m,
+    Xt=Xt, yt=yt, sp=sp,
+    device=device,
+    lgb_predict_fn=lgb_predict_test,
+    cb_predict_fn=cb_predict_test,
+    tx_predict_fn=tx_predict_test,
+    moirai_predict_fn=moirai_predict_test,
+    seq_len_tx=96,
+    pred_len_tx=1,
+    model_size_mo='small',
+    freq_mo='D'
+)
 print(f'  OOF matrix shape: {oof_df_actual.shape}')
 print(f'  OOF columns: {oof_df_actual.columns.tolist()}')
-print(f'  OOF NaN count per column: {oof_df_actual.isna().sum().to_dict()}')
+print(f'  OOF NaN count: {oof_df_actual.isna().sum().to_dict()}')
 if len(oof_df_actual) < 20:
-    print(f'  [ERROR] OOF dataframe too small ({len(oof_df_actual)} samples). Required: >= 20')
-meta_model_actual, _, _, bp_mt, _ = optimize_lstm_meta(oof_df_actual, device, n_trials=N_MT)
+    print(f'  [ERROR] OOF dataframe too small ({len(oof_df_actual)} samples).')
+
+print(f'  Entrenando Meta LSTM (Ensamble Actual)...')
+meta_model_actual, _, _, bp_mt, _ = optimize_lstm_meta(
+    oof_df_actual, device, n_trials=N_MT
+)
 ws_meta_actual = bp_mt.get('window_size', 10) if meta_model_actual is not None else 10
 if meta_model_actual is None:
     print(f'  [ERROR] meta_model_actual is None. Training failed.')
 
-# Meta Ensamble Ablation (Sin TimeXer)
+# Las ablaciones derivan directamente de oof_df_actual (ya completo)
 print(f'[7/11] Entrenando Meta LSTM Ours (Sin TimeXer)...')
-oof_df_ablation = build_oof_dataframe_ablation(oof_l, oof_c, oof_m, yt)
+oof_df_ablation = oof_df_actual.drop(columns=['timexer'])
 print(f'  OOF matrix shape: {oof_df_ablation.shape}')
-# Reusamos la lógica de optimización de LSTM actual ya que la estructura base no cambia (solo el # features)
-meta_model_ablation, _, _, bp_ab, _ = optimize_lstm_meta(oof_df_ablation, device, n_trials=N_AB)
+meta_model_ablation, _, _, bp_ab, _ = optimize_lstm_meta(
+    oof_df_ablation, device, n_trials=N_AB
+)
 ws_meta_ablation = bp_ab.get('window_size', 10) if meta_model_ablation is not None else 10
 
-# Meta Ensamble Ablation (Sin CatBoost)
 print(f'[7.5/11] Entrenando Meta LSTM Ours (Sin CatBoost)...')
 oof_df_no_cb = oof_df_actual.drop(columns=['catboost'])
 print(f'  OOF matrix shape: {oof_df_no_cb.shape}')
-print(f'  OOF columns: {oof_df_no_cb.columns.tolist()}')
-meta_model_no_cb, _, _, bp_nc, _ = optimize_lstm_meta(oof_df_no_cb, device, n_trials=N_NC)
+meta_model_no_cb, _, _, bp_nc, _ = optimize_lstm_meta(
+    oof_df_no_cb, device, n_trials=N_NC
+)
 ws_meta_no_cb = bp_nc.get('window_size', 10) if meta_model_no_cb is not None else 10
 
 # Meta Ensamble SOTA
@@ -722,5 +723,3 @@ inject_dm_results(report_path, dm_blocks)
 
 print(f'\n[PIPELINE] Reporte comparativo generado en: {report_path}')
 print(f'[PIPELINE] Pruebas Diebold-Mariano inyectadas ({len(dm_results)} pares).')
-
-
