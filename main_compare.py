@@ -312,7 +312,7 @@ except Exception as e:
 print(f'[4/11] Split Walk-Forward...')
 # Usar 75% del data para training para asegurar que TimeXer/Moirai tengan suficientes muestras
 # (seq_len=96 + pred_len=30 + 10 = 136 mínimo requerido)
-k = 5; sp = wfrw(yt, k=k, fh_val=30, window_ratio=0.75)
+sp = wfrw(yt, fh_val=30, window_ratio=0.65, step_length=30)
 
 # Training Base Models
 print(f'[5/11] Entrenando Modelos Base ({device})...')
