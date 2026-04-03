@@ -9,7 +9,7 @@ start = datetime(2020,1,1)
 end = datetime(2025, 10, 31)
 
 def macroeconomicos(tiempo):
-    max_retries = 5
+    max_retries = 7
     macro = None
     for attempt in range(max_retries):
         try:
@@ -18,7 +18,7 @@ def macroeconomicos(tiempo):
         except Exception as e:
             if attempt < max_retries - 1:
                 print(f"  [Advertencia] Error conectando a FRED ({e}). Reintentando {attempt+1}/{max_retries} en 5s...")
-                time.sleep(5)
+                time.sleep(20)
             else:
                 print("  [Error] No se pudo obtener la información de FRED después de múltiples intentos.")
                 raise e
