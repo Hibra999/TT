@@ -450,9 +450,9 @@ for name, arr in [('LGB', pl), ('CB', pc), ('TX', pt), ('MO', pm),
 
 # Generando Predicciones Meta
 print(f'[10/11] Predicciones Ensambles (Meta-Learners)...')
-
 X_test_bases = np.column_stack([pl, pc, pt, pm])
 
+# ── Paso 1: Inferencia meta LSTM secuenciales ──
 pmt_actual   = np.full(len(ye), np.nan)
 pmt_ablation = np.full(len(ye), np.nan)
 pmt_no_cb    = np.full(len(ye), np.nan)
@@ -502,49 +502,22 @@ if meta_model_sota is not None:
                 pmt_sota[i] = meta_model_sota(x_t).cpu().item()
     print(f'  [SM] {(~np.isnan(pmt_sota)).sum()}/{len(ye)} válidas')
 
-# ── Paso 2: Primera pasada GRU y Transformer para obtener window_size ──
-print('  > GRU Meta - primera pasada...')
-_, info_gru_tmp   = gru_predict(oof_df_actual, X_test_bases, n_trials=N_GRU_META, device=device)
-ws_gru_meta       = info_gru_tmp.get('window_size', 1)
-
-print('  > Transformer Meta - primera pasada...')
-_, info_trans_tmp = trans_predict(oof_df_actual, X_test_bases, n_trials=N_TRANS_META, device=device)
-ws_trans_meta     = info_trans_tmp.get('window_size', 1)
-
-# ── Paso 3: Calcular ws_max y construir oof_df_cut (Opción A) ──
-ws_max = max(
-    ws_meta_actual   if meta_model_actual   is not None else 1,
-    ws_meta_ablation if meta_model_ablation is not None else 1,
-    ws_meta_no_cb    if meta_model_no_cb    is not None else 1,
-    ws_meta_sota     if meta_model_sota     is not None else 1,
-    ws_gru_meta,
-    ws_trans_meta,
-)
-n_ventanas_validas = len(oof_df_actual) - (ws_max - 1)
-tr_sz_lstm         = int(n_ventanas_validas * 0.8)
-oof_df_cut         = oof_df_actual.iloc[
-    ws_max - 1 : ws_max - 1 + tr_sz_lstm
-].reset_index(drop=True)
-
-print(f'\n  [META ALIGN] ws_lstm={ws_meta_actual}, '
-      f'ws_gru={ws_gru_meta}, ws_trans={ws_trans_meta}')
-print(f'  [META ALIGN] ws_max={ws_max}')
-print(f'  [META ALIGN] OOF total:           {len(oof_df_actual)}')
-print(f'  [META ALIGN] Ventanas válidas:    {n_ventanas_validas}')
-print(f'  [META ALIGN] 80% train LSTM:      {tr_sz_lstm}')
-print(f'  [META ALIGN] oof_df_cut shape:    {oof_df_cut.shape}')
-
-# ── Paso 4: Entrenar todos los meta-learners con oof_df_cut ──
+# ── Paso 2: Todos los meta-learners usan oof_df_actual completo ──
 print('\n  > Meta modelos lineales y promedio (Ensamble Actual)...')
 oof_cols = ['lgb', 'catboost', 'timexer', 'moirai']
-assert set(oof_cols).issubset(oof_df_cut.columns), \
-    f"[ERROR] oof_df_cut no tiene las columnas esperadas: {oof_cols}"
+assert set(oof_cols).issubset(oof_df_actual.columns), \
+    f"[ERROR] oof_df_actual no tiene las columnas esperadas: {oof_cols}"
 
-pmt_simple_avg,   _           = sa_predict(oof_df_cut, X_test_bases, n_trials=N_MT, device=device)
-pmt_weighted_avg, info_wa     = wa_predict(oof_df_cut, X_test_bases, n_trials=N_MT, device=device)
-pmt_ridge,        info_rd     = rd_predict(oof_df_cut, X_test_bases, n_trials=N_MT, device=device)
-pmt_lasso,        info_ls     = ls_predict(oof_df_cut, X_test_bases, n_trials=N_MT, device=device)
-pmt_elasticnet,   info_en     = en_predict(oof_df_cut, X_test_bases, n_trials=N_MT, device=device)
+pmt_simple_avg,   _           = sa_predict(oof_df_actual, X_test_bases,
+                                            n_trials=N_MT, device=device)
+pmt_weighted_avg, info_wa     = wa_predict(oof_df_actual, X_test_bases,
+                                            n_trials=N_MT, device=device)
+pmt_ridge,        info_rd     = rd_predict(oof_df_actual, X_test_bases,
+                                            n_trials=N_MT, device=device)
+pmt_lasso,        info_ls     = ls_predict(oof_df_actual, X_test_bases,
+                                            n_trials=N_MT, device=device)
+pmt_elasticnet,   info_en     = en_predict(oof_df_actual, X_test_bases,
+                                            n_trials=N_MT, device=device)
 
 print(f'  [WA] Pesos: {info_wa.get("weights", {})}')
 print(f'  [RD] alpha={info_rd.get("alpha", "N/A")}')
@@ -553,33 +526,50 @@ print(f'  [EN] alpha={info_en.get("alpha", "N/A")}, '
       f'l1_ratio={info_en.get("l1_ratio", "N/A")}')
 
 print('  > LightGBM Meta (Ensamble Actual)...')
-pmt_lgb_meta,   info_lgb_meta = lgbm_meta_predict(oof_df_cut, X_test_bases, n_trials=N_LGB_META, device=device)
+pmt_lgb_meta,   info_lgb_meta = lgbm_meta_predict(oof_df_actual, X_test_bases,
+                                                    n_trials=N_LGB_META, device=device)
 print('  > Random Forest Meta (Ensamble Actual)...')
-pmt_rf_meta,    info_rf_meta  = rf_meta_predict(oof_df_cut, X_test_bases, n_trials=N_RF_META, device=device)
+pmt_rf_meta,    info_rf_meta  = rf_meta_predict(oof_df_actual, X_test_bases,
+                                                 n_trials=N_RF_META, device=device)
+
 print(f'  [LGB_META] n_estimators={info_lgb_meta.get("n_estimators","N/A")}, '
       f'lr={info_lgb_meta.get("learning_rate","N/A")}')
 print(f'  [RF_META]  n_estimators={info_rf_meta.get("n_estimators","N/A")}, '
       f'max_depth={info_rf_meta.get("max_depth","N/A")}')
 
 print('  > MLP Meta (Ensamble Actual)...')
-pmt_mlp_meta,   info_mlp      = mlp_predict(oof_df_cut, X_test_bases, n_trials=N_MLP_META, device=device)
+pmt_mlp_meta,   info_mlp      = mlp_predict(oof_df_actual, X_test_bases,
+                                              n_trials=N_MLP_META, device=device)
 
-print('  > GRU Meta - entrenamiento final (Ensamble Actual)...')
-pmt_gru_meta,   info_gru      = gru_predict(oof_df_cut, X_test_bases, n_trials=N_GRU_META, device=device)
+print('  > GRU Meta (Ensamble Actual)...')
+pmt_gru_meta,   info_gru      = gru_predict(oof_df_actual, X_test_bases,
+                                              n_trials=N_GRU_META, device=device)
+ws_gru_meta = info_gru.get('window_size', 1)
 
-print('  > Transformer Meta - entrenamiento final (Ensamble Actual)...')
-pmt_trans_meta, info_trans    = trans_predict(oof_df_cut, X_test_bases, n_trials=N_TRANS_META, device=device)
+print('  > Transformer Meta (Ensamble Actual)...')
+pmt_trans_meta, info_trans    = trans_predict(oof_df_actual, X_test_bases,
+                                               n_trials=N_TRANS_META, device=device)
+ws_trans_meta = info_trans.get('window_size', 1)
 
 print(f'  [MLP]   hidden={info_mlp.get("hidden_size","N/A")}, '
       f'layers={info_mlp.get("n_layers","N/A")}')
-print(f'  [GRU]   window={info_gru.get("window_size","N/A")}, '
+print(f'  [GRU]   window={ws_gru_meta}, '
       f'hidden={info_gru.get("hidden_size","N/A")}')
-print(f'  [TRANS] window={info_trans.get("window_size","N/A")}, '
+print(f'  [TRANS] window={ws_trans_meta}, '
       f'd_model={info_trans.get("d_model","N/A")}, '
       f'nhead={info_trans.get("nhead","N/A")}')
 
-# ── Paso 5: Alinear cobertura de test ──
-effective_start = ws_max - 1
+# ── Paso 3: Alinear cobertura de test ──
+# Todos los meta-learners se evalúan sobre el mismo período
+effective_start = max(
+    ws_meta_actual   if meta_model_actual   is not None else 1,
+    ws_meta_ablation if meta_model_ablation is not None else 1,
+    ws_meta_no_cb    if meta_model_no_cb    is not None else 1,
+    ws_meta_sota     if meta_model_sota     is not None else 1,
+    ws_gru_meta,
+    ws_trans_meta,
+) - 1
+
 for arr in [
     pmt_actual, pmt_ablation, pmt_no_cb, pmt_sota,
     pmt_simple_avg, pmt_weighted_avg,
@@ -589,10 +579,11 @@ for arr in [
 ]:
     arr[:effective_start] = np.nan
 
-print(f'\n  [META ALIGN] effective_start={effective_start} | '
+print(f'\n  [META ALIGN] ws_lstm={ws_meta_actual}, '
+      f'ws_gru={ws_gru_meta}, ws_trans={ws_trans_meta}')
+print(f'  [META ALIGN] effective_start={effective_start} | '
       f'observaciones comparables en test: '
       f'{len(ye) - effective_start}/{len(ye)}')
-
 
 # Métricas y reconstrucciones
 print(f'[11/11] Calculando Métricas Comparativas y Reporte...')
