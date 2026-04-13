@@ -32,6 +32,8 @@ from preprocessing.walk_forward import wfrw; from features.tecnical_indicators i
 from sklearn.preprocessing import MinMaxScaler; import torch
 from sklearn.metrics import mean_squared_error
 
+import time
+
 warnings.filterwarnings("ignore")
 try:
     from numba import njit, prange; HAS_NUMBA = True
@@ -98,15 +100,13 @@ MDL = {
 # ===== CONFIG =====
 TOKEN = '^GSPC'
 # TOKEN = 'BTC/USDT'
-N_LGB, N_CB = 10, 10
-N_TX, N_MO = 10, 10
-N_BL = 10 
-N_MT, N_AB, N_NC, N_SM = 10 , 10, 10, 10
-N_LGB_META  = 10   # trials Optuna para LightGBM meta
-N_RF_META   = 10   # trials Optuna para Random Forest meta
-N_MLP_META  = 10   # trials Optuna para MLP meta
-N_GRU_META  = 10   # trials Optuna para GRU meta
-N_TRANS_META = 10  # trials Optuna para Transformer meta
+N_LGB, N_CB = 100, 100
+N_TX, N_MO = 100, 100
+N_BL = 100 
+N_MT, N_AB, N_NC, N_SM = 100 , 100, 100, 100
+N_LGB_META, N_RF_META = 100, 100   # trials Optuna para LightGBM meta, Random Forest meta
+N_MLP_META, N_GRU_META = 100, 100   # trials Optuna para MLP meta, GRU meta
+N_TRANS_META = 100  # trials Optuna para Transformer meta
 
 from datetime import datetime
 train_start = '2015-01-01'
@@ -120,6 +120,9 @@ else:
 
 START, END = train_start, test_end
 # ==================
+
+# Medir tiempo de ejecución del script
+t0 = time.perf_counter()
 
 # ===== CUDA STATUS CHECK - ALL MODELS =====
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -739,3 +742,7 @@ inject_dm_results(report_path, dm_blocks)
 
 print(f'\n[PIPELINE] Reporte comparativo generado en: {report_path}')
 print(f'[PIPELINE] Pruebas Diebold-Mariano inyectadas ({len(dm_results)} pares).')
+
+t1 = time.perf_counter()
+
+print(f"Tiempo de ejecución: {t1-t0:.5f} seg's")
