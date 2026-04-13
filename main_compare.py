@@ -98,7 +98,7 @@ MDL = {
 }
 
 # ===== CONFIG =====
-TOKEN = '^GSPC'
+TOKEN = 'AAPL'
 # TOKEN = 'BTC/USDT'
 N_LGB, N_CB = 100, 100
 N_TX, N_MO = 100, 100
@@ -745,4 +745,4 @@ print(f'[PIPELINE] Pruebas Diebold-Mariano inyectadas ({len(dm_results)} pares).
 
 t1 = time.perf_counter()
 
-print(f"Tiempo de ejecución: {t1-t0:.5f} seg's")
+print(f"Tiempo de ejecución: {(t1-t0)/3600.0:.5f} horas")
