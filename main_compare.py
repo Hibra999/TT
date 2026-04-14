@@ -98,7 +98,7 @@ MDL = {
 }
 
 # ===== CONFIG =====
-TOKEN = 'NVDA'
+TOKEN = 'KO'
 # TOKEN = 'BTC/USDT'
 N_LGB, N_CB = 100, 100
 N_TX, N_MO = 100, 100
