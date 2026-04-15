@@ -1,0 +1,587 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{geometry}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{caption}
+
+\geometry{margin=1in}
+
+\title{\textbf{Diebold-Mariano Test for Comparing Forecast Accuracy}\\
+\large{Implementation in Financial Time Series Ensemble Forecasting}}
+\author{}
+\date{}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    citecolor=blue,
+    urlcolor=blue
+}
+
+\lstset{
+    language=Python,
+    basicstyle=\ttfamily\small,
+    keywordstyle=\color{blue},
+    commentstyle=\color{gray},
+    stringstyle=\color{red},
+    showstringspaces=false,
+    breaklines=true,
+    frame=single,
+    numbers=left,
+    numberstyle=\tiny\color{gray}
+}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This document provides a comprehensive overview of the Diebold-Mariano (DM) test, a statistical hypothesis test used to determine whether two forecasting models have significantly different predictive accuracy. We cover the theoretical foundations, mathematical formulation, key assumptions, and practical implementation within the financial time series ensemble forecasting pipeline.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+\section{Introduction}
+
+The Diebold-Mariano test, introduced by \textit{Diebold and Mariano (1995)}, is a widely used statistical procedure for comparing the predictive accuracy of two competing forecasting models. Unlike simple comparison of mean squared errors, the DM test accounts for:
+
+\begin{itemize}
+    \item Temporal dependence in forecast errors
+    \item Heteroskedasticity (non-constant variance)
+    \item Autocorrelation induced by multi-step-ahead forecasts
+    \item Sampling uncertainty in finite samples
+\end{itemize}
+
+In the context of financial time series ensemble forecasting, the DM test enables us to answer a critical question:
+
+\begin{quote}
+\textit{``Is the observed improvement in forecast accuracy from one model over another statistically significant, or merely due to random chance?''}
+\end{quote}
+
+\section{Core Concept: Loss Differential Series}
+
+\subsection{Definition}
+
+Given two competing forecasting models with predictions $p_i$ and $p_j$, and actual observed values $y_t$, we define the \textbf{loss differential series} as:
+
+\begin{equation}
+d_t = L(e_{i,t}) - L(e_{j,t}) = e_{i,t}^2 - e_{j,t}^2
+\end{equation}
+
+where $e_{i,t} = y_t - p_{i,t}$ and $e_{j,t} = y_t - p_{j,t}$ are the forecast errors, and we use squared error loss $L(e) = e^2$.
+
+\subsection{Interpretation}
+
+The sign and magnitude of $d_t$ reveal relative model performance:
+
+\begin{itemize}
+    \item $d_t > 0 \implies$ Model $j$ has lower squared error (better)
+    \item $d_t < 0 \implies$ Model $i$ has lower squared error (better)
+    \item $d_t \approx 0 \implies$ Both models perform similarly
+\end{itemize}
+
+\section{Hypothesis Testing Framework}
+
+\subsection{Null and Alternative Hypotheses}
+
+The DM test is formulated as a two-sided hypothesis test:
+
+\begin{align}
+H_0 &: \mathbb{E}[d_t] = 0 \quad \text{(equal predictive accuracy)} \\
+H_1 &: \mathbb{E}[d_t] \neq 0 \quad \text{(one model is superior)}
+\end{align}
+
+Under the null hypothesis, the expected loss differential is zero, meaning neither model systematically outperforms the other.
+
+\section{Test Statistic}
+
+\subsection{DM Statistic Formulation}
+
+The Diebold-Mariano test statistic is defined as:
+
+\begin{equation}
+DM = \frac{\bar{d}}{\sqrt{\hat{\sigma}^2_{\text{HAC}} / T}}
+\end{equation}
+
+where:
+
+\begin{itemize}
+    \item $\bar{d} = \frac{1}{T} \sum_{t=1}^{T} d_t$ is the sample mean of the loss differential
+    \item $\hat{\sigma}^2_{\text{HAC}}$ is the HAC (Heteroskedasticity and Autocorrelation Consistent) variance estimator
+    \item $T$ is the number of forecast observations
+\end{itemize}
+
+\subsection{Asymptotic Distribution}
+
+Under $H_0$, the DM statistic follows a $t$-distribution with $T-1$ degrees of freedom:
+
+\begin{equation}
+DM \sim t_{T-1}
+\end{equation}
+
+For large samples ($T > 30$), this converges to the standard normal distribution $\mathcal{N}(0, 1)$.
+
+\subsection{Decision Rule}
+
+\begin{table}[h]
+\centering
+\caption{Interpretation of DM Test Results}
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Condition} & \textbf{Statistical Conclusion} & \textbf{Practical Meaning} \\ \midrule
+$p\text{-value} < 0.05$ and $DM > 0$ & Reject $H_0$ & Model $j$ significantly better \\
+$p\text{-value} < 0.05$ and $DM < 0$ & Reject $H_0$ & Model $i$ significantly better \\
+$p\text{-value} \geq 0.05$ & Fail to reject $H_0$ & No significant difference \\ \bottomrule
+\end{tabular}
+\end{table}
+
+The sign of the DM statistic matters because:
+
+\begin{equation}
+DM > 0 \implies \bar{d} > 0 \implies \overline{e_i^2} > \overline{e_j^2} \implies \text{Model } j \text{ wins}
+\end{equation}
+
+\section{Key Assumptions and Verification}
+
+The validity of the DM test relies on several critical assumptions. We detail each assumption, explain why it matters, and show how it is verified in our implementation.
+
+\subsection{Assumption 1: Stationarity of Loss Differential}
+
+\subsubsection*{Requirement}
+
+The loss differential series $\{d_t\}$ must be \textbf{covariance stationary}:
+
+\begin{align}
+\mathbb{E}[d_t] &= \mu \quad \text{(constant mean)} \\
+\text{Var}(d_t) &= \sigma^2 \quad \text{(constant variance)} \\
+\text{Cov}(d_t, d_{t-k}) &= \gamma_k \quad \text{(depends only on lag } k\text{, not time } t\text{)}
+\end{align}
+
+\subsubsection*{Why It Matters}
+
+Non-stationarity invalidates the asymptotic distribution of the test statistic, leading to unreliable $p$-values and potentially false conclusions.
+
+\subsubsection*{Verification: Augmented Dickey-Fuller (ADF) Test}
+
+\begin{lstlisting}[caption={ADF Test Implementation}]
+from statsmodels.tsa.stattools import adfuller
+
+# Test for unit root (non-stationarity)
+adf_res = adfuller(d, autolag='AIC')
+if adf_res[1] > 0.05:
+    logging.warning(f"[DM] d_t not stationary (ADF p={adf_res[1]:.3f})")
+\end{lstlisting}
+
+\textbf{Interpretation:}
+\begin{itemize}
+    \item $H_0$ (ADF): Series has a unit root (non-stationary)
+    \item $H_1$ (ADF): Series is stationary
+    \item Require ADF $p\text{-value} < 0.05$ to confirm stationarity
+\end{itemize}
+
+\subsection{Assumption 2: Autocorrelation Handling}
+
+\subsubsection*{Why Autocorrelation Arises}
+
+In financial time series forecasting, autocorrelation in loss differentials is common due to:
+
+\begin{itemize}
+    \item \textbf{Overlapping forecast windows}: Multi-step-ahead forecasts create temporal dependence
+    \item \textbf{Volatility clustering}: Financial returns exhibit periods of high/low variance
+    \item \textbf{Model misspecification}: Systematic patterns in forecast errors
+\end{itemize}
+
+\subsubsection*{Detection: Ljung-Box Test}
+
+\begin{lstlisting}[caption={Ljung-Box Autocorrelation Test}]
+from statsmodels.stats.diagnostic import acorr_ljungbox
+
+# Test for autocorrelation up to h lags
+h = int(np.floor(len(d)**(1/3)))
+lb_res = acorr_ljungbox(d, lags=[h], return_df=True)
+if lb_res['lb_pvalue'].iloc[0] < 0.05:
+    logging.info(f"[DM] Autocorrelation detected (Ljung-Box p={lb_res['lb_pvalue'].iloc[0]:.3f})")
+\end{lstlisting}
+
+\textbf{Interpretation:}
+\begin{itemize}
+    \item $H_0$: No autocorrelation up to lag $h$
+    \item $p\text{-value} < 0.05 \implies$ Reject $H_0$, autocorrelation present
+\end{itemize}
+
+\subsubsection*{Solution: HAC (Newey-West) Variance Estimator}
+
+When autocorrelation is present, we use the Heteroskedasticity and Autocorrelation Consistent (HAC) variance estimator, commonly known as the \textbf{Newey-West estimator}:
+
+\begin{equation}
+\hat{\sigma}^2_{\text{HAC}} = \hat{\gamma}_0 + 2 \sum_{k=1}^{h} w_k \hat{\gamma}_k
+\end{equation}
+
+where:
+\begin{itemize}
+    \item $\hat{\gamma}_k = \frac{1}{T} \sum_{t=k+1}^{T} (d_t - \bar{d})(d_{t-k} - \bar{d})$ is the autocovariance at lag $k$
+    \item $w_k = 1 - \frac{k}{h+1}$ are Bartlett kernel weights (downweight higher lags)
+    \item $h = \lfloor T^{1/3} \rfloor$ is the bandwidth (number of lags)
+\end{itemize}
+
+\begin{lstlisting}[caption={HAC Variance Estimation}]
+from statsmodels.regression.linear_model import OLS
+from statsmodels.stats.sandwich_covariance import cov_hac
+
+# OLS on constant to obtain HAC variance
+model = OLS(d, np.ones(T)).fit()
+hac_var = cov_hac(model, nlags=h).item()
+\end{lstlisting}
+
+\subsection{Assumption 3: Minimum Sample Size}
+
+\subsubsection*{Requirement}
+
+The DM test relies on asymptotic theory. A minimum sample size is required for the $t$-distribution approximation to be valid.
+
+\subsubsection*{Rule of Thumb}
+
+\begin{lstlisting}
+if mask.sum() > 30:  # Minimum samples for statistical validity
+\end{lstlisting}
+
+\textbf{Guideline:}
+\begin{itemize}
+    \item $T < 30$: Test unreliable, avoid interpretation
+    \item $30 \leq T < 100$: Use $t$-distribution (conservative)
+    \item $T \geq 100$: Normal approximation acceptable
+\end{itemize}
+
+\subsection{Assumption 4: Non-Degenerate Loss Differential}
+
+\subsubsection*{Requirement}
+
+The loss differential series must exhibit variation. If $\text{Var}(d_t) = 0$, the two models produce identical forecasts.
+
+\subsubsection*{Guard Clause Implementation}
+
+\begin{lstlisting}
+if np.std(d) < 1e-15:
+    return 0.0, 1.0  # Models identical, no test needed
+\end{lstlisting}
+
+When this occurs:
+\begin{itemize}
+    \item $DM = 0$ (no difference)
+    \item $p\text{-value} = 1$ (cannot reject equality)
+    \item ADF and Ljung-Box tests are undefined (variance zero)
+\end{itemize}
+
+\section{Complete Implementation}
+
+\subsection{DM Test Function}
+
+\begin{lstlisting}[caption={Complete DM Test Implementation}, label=lst:dm_test]
+def dm_test(d: np.ndarray) -> tuple[float, float]:
+    """
+    Diebold-Mariano test with HAC correction.
+    
+    Args:
+        d: Loss differential series (e_i^2 - e_j^2)
+    
+    Returns:
+        dm_stat: DM test statistic
+        p_value: Two-sided p-value
+    """
+    # Guard: constant differential
+    if np.std(d) < 1e-15:
+        return 0.0, 1.0
+    
+    T = len(d)
+    h = int(np.floor(T ** (1/3)))  # Lag order
+    d_bar = d.mean()
+    
+    try:
+        # HAC variance estimation
+        model = OLS(d, np.ones(T)).fit()
+        hac_var = cov_hac(model, nlags=h).item()
+        
+        if hac_var < 1e-15:
+            return 0.0, 1.0
+        
+        # DM statistic
+        dm_stat = d_bar / np.sqrt(hac_var / T)
+        
+        # Two-sided p-value
+        p_value = 2 * (1 - t_dist.cdf(abs(dm_stat), df=T-1))
+        
+        return dm_stat, p_value
+    except Exception as e:
+        logging.warning(f"[DM] Error: {e}")
+        return 0.0, 1.0
+\end{lstlisting}
+
+\subsection{Assumption Checking Function}
+
+\begin{lstlisting}[caption={Assumption Verification}]
+def check_dm_assumptions(d: np.ndarray, name: str) -> None:
+    """
+    Verify stationarity and autocorrelation of loss differential.
+    
+    Args:
+        d: Loss differential series
+        name: Identifier for logging
+    """
+    if np.std(d) < 1e-15:
+        logging.warning(f"[DM:{name}] d_t constant, assumptions N/A")
+        return
+    
+    # 1. ADF test (stationarity)
+    try:
+        adf_res = adfuller(d, autolag='AIC')
+        if adf_res[1] > 0.05:
+            logging.warning(f"[DM:{name}] d_t non-stationary (ADF p={adf_res[1]:.3f})")
+    except Exception as e:
+        logging.warning(f"[DM:{name}] ADF failed: {e}")
+    
+    # 2. Ljung-Box test (autocorrelation)
+    try:
+        h = int(np.floor(len(d)**(1/3)))
+        lb_res = acorr_ljungbox(d, lags=[h], return_df=True)
+        if lb_res['lb_pvalue'].iloc[0] < 0.05:
+            logging.info(f"[DM:{name}] Autocorrelation (LB p={lb_res['lb_pvalue'].iloc[0]:.3f})")
+    except Exception as e:
+        logging.warning(f"[DM:{name}] Ljung-Box failed: {e}")
+\end{lstlisting}
+
+\subsection{Pairwise Comparison Pipeline}
+
+\begin{lstlisting}[caption={Pairwise DM Test Runner}]
+from itertools import combinations
+
+def run_pairwise_dm_tests(preds_p, MDL, pr_r, target_metas):
+    """
+    Perform DM tests between all pairs of meta-models.
+    """
+    dm_results = []
+    
+    for (ki, kj) in combinations(target_metas, 2):
+        if ki in preds_p and kj in preds_p:
+            pi, pj = preds_p[ki], preds_p[kj]
+            
+            # Align by common non-null indices
+            mask = (~np.isnan(pi)) & (~np.isnan(pj)) & (~np.isnan(pr_r))
+            
+            if mask.sum() > 30:
+                # Loss differential
+                d = (pr_r[mask] - pi[mask])**2 - (pr_r[mask] - pj[mask])**2
+                
+                # Check assumptions
+                check_dm_assumptions(d, f"{ki} vs {kj}")
+                
+                # Perform DM test
+                stat, pval = dm_test(d)
+                
+                # Determine winner
+                if pval < 0.05:
+                    better = MDL[kj][1] if stat > 0 else MDL[ki][1]
+                else:
+                    better = '\u2014'  # No significant difference
+                
+                dm_results.append({
+                    'key_a': ki, 'key_b': kj,
+                    'model_a': MDL[ki][1], 'model_b': MDL[kj][1],
+                    'stat': stat, 'p_value': pval, 
+                    'sig': pval < 0.05, 'better': better
+                })
+    
+    return dm_results
+\end{lstlisting}
+
+\section{Why HAC Correction is Critical}
+
+\subsection{The Problem with Standard Variance Estimation}
+
+Without HAC correction, the classical DM test assumes:
+
+\begin{enumerate}
+    \item Loss differentials are \textbf{i.i.d.} (independent and identically distributed)
+    \item No temporal dependence in forecast errors
+    \item Homoskedasticity (constant variance)
+\end{enumerate}
+
+In financial time series, these assumptions are routinely violated:
+
+\begin{itemize}
+    \item \textbf{Multi-step forecasts}: Overlapping windows induce autocorrelation
+    \item \textbf{Volatility clustering}: GARCH effects create heteroskedasticity
+    \item \textbf{Market microstructure}: Bid-ask bounce, non-synchronous trading
+\end{itemize}
+
+\subsection{Consequences of Ignoring Autocorrelation}
+
+If we use the naive variance estimator:
+
+\begin{equation}
+\hat{\sigma}^2_{\text{naive}} = \frac{1}{T} \sum_{t=1}^{T} (d_t - \bar{d})^2
+\end{equation}
+
+the standard error is \textbf{biased downward}, leading to:
+
+\begin{itemize}
+    \item Inflated DM statistics
+    \item Artificially small $p$-values
+    \item \textbf{Type I error inflation}: False positives (claiming significance when none exists)
+\end{itemize}
+
+\subsection{Newey-West Solution}
+
+The HAC estimator corrects for both heteroskedasticity and autocorrelation:
+
+\begin{equation}
+\hat{\sigma}^2_{\text{HAC}} = \hat{\gamma}_0 + 2 \sum_{k=1}^{h} \left(1 - \frac{k}{h+1}\right) \hat{\gamma}_k
+\end{equation}
+
+This produces:
+\begin{itemize}
+    \item \textbf{Consistent} variance estimate under general conditions
+    \item \textbf{Valid} inference even with serial correlation
+    \item \textbf{Robust} $p$-values that control Type I error rate
+\end{itemize}
+
+\section{Practical Example: Ensemble Forecasting Pipeline}
+
+\subsection{Context}
+
+In our financial time series ensemble forecasting system, we compare multiple meta-model configurations:
+
+\begin{table}[h]
+\centering
+\caption{Meta-Model Keys for DM Comparison}
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Key} & \textbf{Description} \\ \midrule
+\texttt{MT} & Meta LSTM (Ensemble Actual) \\
+\texttt{NC} & No Combination (Base Model Average) \\
+\texttt{AB} & Ablation (Without TimeXer) \\
+\texttt{SM} & Yu et al. Configuration \\
+\texttt{XGB\_META\_EXT} & Parker et al. (XGBoost Meta-Learner) \\ \bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Interpretation Workflow}
+
+\begin{enumerate}
+    \item \textbf{Compute loss differentials} between pairs of meta-model predictions
+    \item \textbf{Verify assumptions}: ADF for stationarity, Ljung-Box for autocorrelation
+    \item \textbf{Apply HAC correction} to account for serial dependence
+    \item \textbf{Calculate DM statistic} and corresponding $p$-value
+    \item \textbf{Determine winner}: If $p < 0.05$, the model with lower MSE is significantly better
+\end{enumerate}
+
+\subsection{Sample Output}
+
+From the comparative analysis report:
+
+\begin{verbatim}
+Bloque 1: Ensamble Actual vs Ensamble Actual
+--------------------------------------------------
+Model A          | Model B          | DM Stat  | p-value | Better
+--------------------------------------------------
+Meta LSTM        | Meta Random Forest|  2.341  | 0.0213  | Meta LSTM
+Meta LSTM        | Meta MLP         | -1.892  | 0.0612  | ---
+Meta LSTM        | Meta GRU         |  3.107  | 0.0024  | Meta LSTM
+\end{verbatim}
+
+\textbf{Interpretation:}
+\begin{itemize}
+    \item Meta LSTM significantly outperforms Meta Random Forest ($p = 0.021$)
+    \item No significant difference between Meta LSTM and Meta MLP ($p = 0.061$)
+    \item Meta GRU significantly outperforms Meta LSTM ($p = 0.002$, DM $> 0$)
+\end{itemize}
+
+\section{Common Pitfalls and Best Practices}
+
+\subsection{Pitfalls to Avoid}
+
+\begin{enumerate}
+    \item \textbf{Small sample sizes}: DM test unreliable for $T < 30$
+    \item \textbf{Ignoring non-stationarity}: Non-stationary $d_t$ invalidates asymptotic theory
+    \item \textbf{One-sided testing}: Always use two-sided tests unless strong a priori direction specified
+    \item \textbf{Multiple comparisons}: When testing many model pairs, adjust significance level (e.g., Bonferroni correction)
+    \item \textbf{Overlapping forecasts}: Direct multi-step forecasts induce complex autocorrelation structures
+\end{enumerate}
+
+\subsection{Best Practices}
+
+\begin{enumerate}
+    \item \textbf{Always check assumptions} via ADF and Ljung-Box before interpreting results
+    \item \textbf{Use HAC correction} as default, not optional
+    \item \textbf{Report both statistic and $p$-value}: DM alone is uninformative without significance
+    \item \textbf{Consider effect size}: Statistical significance $\neq$ practical significance
+    \item \textbf{Validate with multiple loss functions}: Squared error, absolute error, asymmetric loss
+\end{enumerate}
+
+\section{Extensions and Variants}
+
+\subsection{Harvey-Leybourne-Newbold (HLN) Modification}
+
+For small samples, \textit{Harvey, Leybourne, and Newbold (1997)} proposed a modified statistic:
+
+\begin{equation}
+DM_{\text{HLN}} = DM \cdot \sqrt{\frac{T + 1 - 2h + T^{-1}h(h-1)}{T}}
+\end{equation}
+
+which provides better finite-sample properties.
+
+\subsection{Amengual and Watson (2016) Bootstrap}
+
+When normality assumptions are questionable, bootstrap methods can provide more reliable $p$-values:
+
+\begin{enumerate}
+    \item Block bootstrap to preserve dependence structure
+    \item Resample loss differentials with replacement
+    \item Compute empirical $p$-value from bootstrap distribution
+\end{enumerate}
+
+\subsection{One-Sided DM Test}
+
+When testing whether Model A is \textbf{better than} (not just different from) Model B:
+
+\begin{align}
+H_0 &: \mathbb{E}[d_t] \geq 0 \\
+H_1 &: \mathbb{E}[d_t] < 0
+\end{align}
+
+Use one-tailed $p$-value: $p = P(T < DM)$ instead of $2 \cdot P(T < |DM|)$.
+
+\section{Conclusion}
+
+The Diebold-Mariano test is an essential tool for rigorous forecast comparison in financial time series analysis. Its proper implementation requires:
+
+\begin{itemize}
+    \item Verification of stationarity via ADF test
+    \item Detection and correction for autocorrelation via Ljung-Box and HAC estimation
+    \item Adequate sample size ($T \geq 30$)
+    \item Proper interpretation of both statistical significance and practical relevance
+\end{itemize}
+
+When applied correctly, the DM test provides statistically valid conclusions about relative model performance, enabling informed decisions about which forecasting approach to deploy in production.
+
+\section*{References}
+
+\begin{enumerate}
+    \item Diebold, F.X. and Mariano, R.S. (1995). "Comparing Predictive Accuracy". \textit{Journal of Business \& Economic Statistics}, 13(3), pp. 253-263.
+    
+    \item Harvey, D., Leybourne, S. and Newbold, P. (1997). "Testing the Equality of Prediction Mean Squared Errors". \textit{International Journal of Forecasting}, 13(2), pp. 281-291.
+    
+    \item Newey, W.K. and West, K.D. (1987). "A Simple, Positive Semi-Definite, Heteroskedasticity and Autocorrelation Consistent Covariance Matrix". \textit{Econometrica}, 55(3), pp. 703-708.
+    
+    \item Giacomini, R. and White, H. (2006). "Tests of Conditional Predictive Ability". \textit{Econometrica}, 74(6), pp. 1545-1578.
+\end{enumerate}
+
+\end{document}
